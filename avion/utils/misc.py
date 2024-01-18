@@ -46,8 +46,8 @@ def generate_label_map(dataset):
         vn_list = []
         mapping_vn2narration = {}
         for f in [
-            'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
-            'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
+            '/home/mona/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
+            '/home/mona/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
         ]:
             csv_reader = csv.reader(open(f))
             _ = next(csv_reader)  # skip the header
