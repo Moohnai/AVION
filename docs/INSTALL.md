@@ -4,7 +4,7 @@
 
 Clone the repo recursively. Note that it is important to add the `--recursive` option.
 ```bash
-git clone --recursive git@github.com:zhaoyue-zephyrus/avion.git
+git clone --recursive git@github.com:Moohnai/avion.git
 ```
 
 ## Requirements
