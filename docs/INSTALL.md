@@ -12,10 +12,12 @@ The repo has been developed on a Ubuntu (22.04) system with 8x NVIDIA RTX A5000 
 
 ## Example conda environment setup
 ```bash
-conda create --name avion python=3.10 -y
-conda activate avion
-pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
+conda create --name fril python=3.10 -y
+conda activate fril
+# pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
+pip install torch==2.1.2 torchvision==0.16.2 torchaudio --index-url https://download.pytorch.org/whl/cu118
 pip install ninja==1.11.1  # install ninja first for building flash-attention
+pip install packaging
 CUDA_HOME=$CUDA_HOME pip install -r requirements.txt
 ```
 
@@ -64,6 +66,13 @@ ln -s <YOUR_CONDA_HOME_PATH>/envs/avion/lib/libdecord.so.6.0.30 <YOUR_CONDA_HOME
 
 * If you see an incorrect path, e.g. `<YOUR_CONDA_HOME_PATH>/envs/avion/lib/python3.10/site-packages/decord`, it means that you are using a wrong decord which may have previously been installed using `pip install decord`. You can `pip uninstall decord` and re-install following the steps above.
 ry due to 
+
+* If you see `/usr/lib/libstdc++.so.6: version 'GLIBCXX_3.4.15' not found` in step (3), it means that you have mismatched GLIBCXX versions between the ubuntu system and anaconda environment. As a workaround, you can simply copy the system libstdc++ to your anaconda libstdc++ and update the soft link, for example (the version number might vary due to your system). Or you can install the below package.
+```bash
+conda install -c conda-forge gcc=12.1.0 -y
+```
+
+
 * If you see errors not listed, please create an issue.
 
 

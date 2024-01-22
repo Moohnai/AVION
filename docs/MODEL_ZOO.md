@@ -6,6 +6,11 @@
 <details><summary> Train a baseline dual-encoder with ViT-B </summary>
 
 ```bash
+cd FRIL/avion
+PYTHONPATH=.:third_party/decord/python/ nohup torchrun --nproc_per_node=4 scripts/main_FRIL_pretrain.py 
+```
+
+```bash
 mkdir $EXP_PATH
 PYTHONPATH=.:third_party/decord/python/ torchrun \
     --nproc_per_node=8 \

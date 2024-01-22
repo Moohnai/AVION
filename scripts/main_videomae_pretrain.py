@@ -15,7 +15,7 @@ from timm.data.loader import MultiEpochsDataLoader
 
 from avion.data.kinetics_dataset import KineticsDataset
 from avion.data.transforms import GroupMultiScaleCrop, Permute, TubeMaskingGeneratorGPU
-import avion.models.model_videomae as model_videomae
+import FRIL.avion.avion.models.model_FRIL as model_FRIL
 from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
@@ -108,7 +108,7 @@ def main(args):
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
 
     print("=> creating model: {}".format(args.model))
-    model = getattr(model_videomae, args.model)(
+    model = getattr(model_FRIL, args.model)(
         pretrained=False,
         drop_path_rate=args.drop_path_rate,
         decoder_depth=args.decoder_depth,

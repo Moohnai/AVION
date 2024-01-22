@@ -2,6 +2,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.out
+
+# directories
+datasets/*/
+results/
+wandb/
 
 # C extensions
 *.so

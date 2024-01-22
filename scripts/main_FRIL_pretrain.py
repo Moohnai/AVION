@@ -1,14 +1,21 @@
 import argparse
 from collections import OrderedDict
+import copy
 import datetime
 import json
+import math
 import os
+from pathlib import Path
 import time
+import numpy as np
+import wandb
+
 
 from einops import rearrange
 import pandas as pd
 import kornia as K
 import torch
+import torch.nn.functional as F
 import torch.cuda.amp as amp
 from torch.distributed.optim import ZeroRedundancyOptimizer
 import torchvision.transforms._transforms_video as transforms_video
@@ -17,30 +24,32 @@ from timm.data.loader import MultiEpochsDataLoader
 
 # add avion to python path
 import sys
-sys.path.append("/home/mona/avion/")
+sys.path.append("/home/mona/FRIL/avion/")
 
-from avion.data.clip_dataset import get_downstream_dataset
+from avion.data.clip_dataset import get_pretrain_dataset_FRIL
 from avion.data.kinetics_dataset import KineticsDataset
-from avion.data.transforms import GroupMultiScaleCrop, Permute, TubeMaskingGeneratorGPU
-import FRIL.avion.avion.models.model_FRIL as model_FRIL
+from torchvision.transforms import v2
+from avion.data.transforms import GroupMultiScaleCrop, Permute, TubeMaskingGeneratorGPU, Permute_BB
+import avion.models.model_FRIL as model_FRIL
 from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
+from avion.losses.losses import ClipLoss, Feature_Reconstruction_Loss
 import avion.utils.distributed as dist_utils
 from avion.utils.meters import AverageMeter, ProgressMeter
-from avion.utils.misc import check_loss_nan, generate_label_map
+from avion.utils.misc import check_loss_nan, generate_label_map, get_grad_norm_
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='VideoMAE pretrain', add_help=False)
     parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_mir'])
     parser.add_argument('--root',
-                        default='/home/mona/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
+                        default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
                         type=str, help='path to train dataset root')
     parser.add_argument('--train-metadata', type=str,
-                        default='/home/mona/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv')
+                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv')
     parser.add_argument('--val-metadata', type=str,
-                        default='/home/mona/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv')
-    parser.add_argument('--output-dir', default='/home/mona/avion/results/', type=str, help='output dir')
+                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv')
+    parser.add_argument('--output-dir', default='/home/mona/FRIL/avion/results/', type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
@@ -55,7 +64,7 @@ def get_args_parser():
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
     # model
-    parser.add_argument('--model', default='VIDEOMAE_VITB16', type=str)
+    parser.add_argument('--model', default='FRIL_VITB16', type=str)
     parser.add_argument('--channel-last', action='store_true', dest='channel_last')
     parser.add_argument('--disable-channel-last', action='store_false', dest='channel_last')
     parser.set_defaults(channel_last=False)
@@ -65,10 +74,10 @@ def get_args_parser():
     parser.set_defaults(use_grad_checkpointing=True)
     parser.add_argument('--use-flash-attn-at-encoder', action='store_true', dest='use_flash_attn_at_encoder')
     parser.add_argument('--disable-flash-attn-at-encoder', action='store_false', dest='use_flash_attn_at_encoder')
-    parser.set_defaults(use_flash_attn_at_encoder=True)
+    parser.set_defaults(use_flash_attn_at_encoder=False)
     parser.add_argument('--use-flash-attn-at-decoder', action='store_true', dest='use_flash_attn_at_decoder')
     parser.add_argument('--disable-flash-attn-at-decoder', action='store_false', dest='use_flash_attn_at_decoder')
-    parser.set_defaults(use_flash_attn_at_decoder=True)
+    parser.set_defaults(use_flash_attn_at_decoder=False)
     parser.add_argument('--drop-path-rate', default=0., type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     parser.add_argument('--normalize-target', action='store_true', dest='normalize_target')
@@ -81,9 +90,9 @@ def get_args_parser():
     parser.add_argument('--epochs', default=800, type=int)
     parser.add_argument('--warmup-epochs', default=40, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=16, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=25, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
-    parser.add_argument('--lr', default=1.5e-4, type=float)
+    parser.add_argument('--lr', default=1.2e-4, type=float) # 1.5e-4 #best for epic:1.2e-4
     parser.add_argument('--fix-lr', action='store_true', help='disable cosine lr decay if set True')
     parser.add_argument('--lr-start', default=1e-6, type=float, help='initial warmup lr')
     parser.add_argument('--lr-end', default=1e-5, type=float, help='minimum final lr')
@@ -96,6 +105,20 @@ def get_args_parser():
     parser.set_defaults(disable_amp=False)
     parser.add_argument('--grad-clip-norm', default=None, type=float)
     parser.add_argument('--use-multi-epochs-loader', action='store_true')
+    parser.add_argument('--motion_box_path', 
+                        default='/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json', 
+                        type=str, help='path to motion box json file')
+    parser.add_argument('--embedded_text_path', 
+                        default="/home/mona/FRIL/avion/datasets/EK100/epic_embedded_mix_captions_train_dict.pt", 
+                        help='path to embedded text')
+    parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
+    parser.add_argument('--CLIP_scale', default=0, type=float, help='the weight of clip loss')
+    parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
+    parser.add_argument('--patch_iter', default=10, type=int, help='the number of iterations for patch-wise clip loss')
+    parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
+                        help='EMA momentum schedule (default: 0.996 1.0)')
+    parser.add_argument('--ipe_scale', type=float, default=1.0, metavar='M',
+                        help='Inverse proportionality constant for EMA momentum schedule (default: 1.0)')
     # system
     parser.add_argument('--print-freq', default=10, type=int, help='print frequency')
     parser.add_argument('--verbose', action='store_true')
@@ -116,6 +139,7 @@ def get_args_parser():
 
 
 def main(args):
+
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
 
@@ -130,6 +154,20 @@ def main(args):
         channel_last=args.channel_last,
     )
     model.cuda(args.gpu)
+    teacher_model = copy.deepcopy(model)
+
+    # initialize wandb
+    run_name = "new_pretrain_FRIL_sub_epic_Kitchens_with_caption_MSE_scale=0,CLIP_scale=0,FR_scale=1,ssvli_iter=10_800_epochs_batch128_accum=1"
+    wandb.init(
+        project="ssvli_epic",
+        group="pretrained",
+        name=run_name,
+        config=args,
+        )
+    # append the run name to the output_dir
+    args.output_dir = os.path.join(args.output_dir, run_name)
+    if args.output_dir:
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     patch_size = model.encoder.patch_embed.patch_size
     args.window_size = (args.clip_length // 2, args.input_size // patch_size[0], args.input_size // patch_size[1])
@@ -138,7 +176,9 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200)
 
     # define loss function (criterion) and optimizer
-    criterion = torch.nn.MSELoss().cuda(args.gpu)
+    MSE_criterion = torch.nn.MSELoss().cuda(args.gpu)
+    Clip_criterion = ClipLoss().cuda(args.gpu)
+    FR_criterion = Feature_Reconstruction_Loss().cuda(args.gpu)
 
     n_wd, n_non_wd = [], []
     p_wd, p_non_wd = [], []
@@ -217,43 +257,6 @@ def main(args):
     mean, std = [0.485 * 255, 0.456 * 255, 0.406 * 255], [0.229 * 255, 0.224 * 255, 0.225 * 255]
     normalize = K.enhance.Normalize(mean=mean, std=std)
 
-    # if args.fused_decode_crop:
-    #     train_transform = None
-    # else:
-    #     train_transform_ls = [
-    #         Permute([3, 0, 1, 2]),
-    #         GroupMultiScaleCrop(224, [1, .875, .75, .66]),
-    #         torchvision.transforms.RandomHorizontalFlip(0.5),
-    #     ]
-    #     train_transform = torchvision.transforms.Compose(train_transform_ls)
-    # train_dataset = KineticsDataset(
-    #     args.root, args.train_metadata, transform=train_transform, is_training=True, 
-    #     clip_length=args.clip_length, clip_stride=args.clip_stride,
-    #     threads=args.decode_threads,
-    #     fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-    #     fast_msc=args.fused_decode_crop, msc_params=(224, ),
-    #     fast_cc=False, cc_params=(224, ),
-    #     hflip_prob=0.5, vflip_prob=0.,
-    #     mask_type='later',  # do masking in batches
-    #     window_size=args.window_size, mask_ratio=args.mask_ratio,
-    #     verbose=args.verbose,
-    # )
-
-    # if args.distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    # else:
-    #     train_sampler = None
-    # if args.use_multi_epochs_loader:
-    #     train_loader = MultiEpochsDataLoader(
-    #         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-    #         num_workers=args.workers, pin_memory=args.use_pin_memory, sampler=train_sampler, drop_last=True
-    #     )
-    # else:
-    #     train_loader = torch.utils.data.DataLoader(
-    #         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-    #         num_workers=args.workers, pin_memory=args.use_pin_memory, sampler=train_sampler, drop_last=True
-    #     )
-
     ####################
     crop_size = 336 if args.model.endswith("_336PX") else 224
 
@@ -269,20 +272,34 @@ def main(args):
         ]
         gpu_val_transform_ls = [K.enhance.Normalize(mean=mean, std=std)]
     else:
+        # base_train_transform_ls = [
+        #     Permute([3, 0, 1, 2]),
+        #     torchvision.transforms.RandomResizedCrop(crop_size, scale=(0.5, 1.0)),
+        #     transforms_video.NormalizeVideo(mean=mean, std=std),
+        # ]
         base_train_transform_ls = [
-            Permute([3, 0, 1, 2]),
-            torchvision.transforms.RandomResizedCrop(crop_size, scale=(0.5, 1.0)),
-            transforms_video.NormalizeVideo(mean=mean, std=std),
+            Permute_BB([0, 3, 1, 2]),
+            v2.RandomResizedCrop(crop_size, scale=(0.5, 1.0), antialias=True),
+            v2.Normalize(mean, std),
+            Permute_BB([1, 0, 2, 3]),
         ]
         gpu_train_transform_ls = []
+        # base_val_transform_ls = [
+        #     Permute([3, 0, 1, 2]),
+        #     torchvision.transforms.Resize(crop_size),
+        #     torchvision.transforms.CenterCrop(crop_size),
+        #     transforms_video.NormalizeVideo(mean=mean, std=std),
+        # ]
         base_val_transform_ls = [
-            Permute([3, 0, 1, 2]),
-            torchvision.transforms.Resize(crop_size),
-            torchvision.transforms.CenterCrop(crop_size),
-            transforms_video.NormalizeVideo(mean=mean, std=std),
+            Permute_BB([0, 3, 1, 2]),
+            v2.Resize(crop_size, antialias=True),
+            v2.CenterCrop(crop_size),
+            v2.Normalize(mean, std),
+            Permute_BB([1, 0, 2, 3]),
         ]
         gpu_val_transform_ls = []
-    train_transform = torchvision.transforms.Compose(base_train_transform_ls)
+    # train_transform = torchvision.transforms.Compose(base_train_transform_ls)
+    train_transform = v2.Compose(base_train_transform_ls)
     train_transform_gpu = torch.nn.Sequential(*gpu_train_transform_ls)
     val_transform = torchvision.transforms.Compose(base_val_transform_ls)
     val_transform_gpu = torch.nn.Sequential(*gpu_val_transform_ls)
@@ -295,17 +312,17 @@ def main(args):
         args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
     num_clips_at_val = args.num_clips
     args.num_clips = 1
-    train_dataset = get_downstream_dataset(
+    train_dataset = get_pretrain_dataset_FRIL(
         train_transform, crop_size, args, subset='train', label_mapping=mapping_vn2act,
     )
     args.num_clips = num_clips_at_val
-    val_dataset = get_downstream_dataset(
-        val_transform, crop_size, args, subset='val', label_mapping=mapping_vn2act,
-    )
+    # val_dataset = get_downstream_dataset_FRIL(
+    #     val_transform, crop_size, args, subset='val', label_mapping=mapping_vn2act,
+    # )
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
+        # val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
     else:
         train_sampler = None
         val_sampler = None
@@ -333,6 +350,11 @@ def main(args):
             warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start
         )
 
+    # -- momentum schedule
+    ipe = len(train_loader)
+    momentum_scheduler = (args.ema[0] + i*(args.ema[1]-args.ema[0])/(ipe*args.epochs*args.ipe_scale)
+                          for i in range(int(ipe*args.epochs*args.ipe_scale)+1))
+
     print(args)
 
     print("=> beginning training")
@@ -341,7 +363,32 @@ def main(args):
         # train for one epoch
         if args.distributed:
             train_loader.sampler.set_epoch(epoch)
-        train_stats = train(train_loader, normalize, model, criterion, optimizer, scaler, epoch, lr_schedule, args)
+        train_stats = train(
+            train_loader, 
+            normalize, 
+            model, 
+            teacher_model,
+            MSE_criterion, 
+            Clip_criterion,
+            FR_criterion,
+            optimizer, 
+            scaler, 
+            epoch, 
+            lr_schedule, 
+            args)
+
+        # wandb log
+        wandb_dict = {}
+        for key, value in train_stats.items():
+            wandb_dict["train_epoch_"+key] = value
+        wandb.log(wandb_dict, step=epoch)
+
+        # momentum update of target encoder
+        with torch.no_grad():
+            m = next(momentum_scheduler)
+            for param_q, param_k in zip(model.parameters(), teacher_model.parameters()):
+                param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
+
 
         if (epoch + 1) % args.save_freq == 0:
             print("=> saving checkpoint")
@@ -363,12 +410,27 @@ def main(args):
             with open(os.path.join(args.output_dir, 'log.txt'), 'a') as f:
                 f.write(json.dumps(log_stats) + '\n')
         
-def train(train_loader, normalize, model, criterion, optimizer, scaler, epoch, lr_schedule, args):
+def train(
+        train_loader, 
+        normalize, 
+        model, 
+        teacher_model,
+        MSE_criterion,
+        Clip_criterion,
+        FR_criterion,
+        optimizer, 
+        scaler, 
+        epoch, 
+        lr_schedule, 
+        args,
+    ):
     batch_time = AverageMeter('Time', ':6.2f')
     data_time = AverageMeter('Data', ':6.2f')
     model_time = AverageMeter('Model', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = ['loss']
+    metric_names = ['loss', 'mse_loss', 'clip_loss', 'fr_loss', 'total_loss', 'clip_acc', 'loss_scale']
+    if args.grad_clip_norm is not None:
+        metric_names.append('grad_norm')
     iters_per_epoch = len(train_loader) // args.update_freq
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
@@ -381,8 +443,13 @@ def train(train_loader, normalize, model, criterion, optimizer, scaler, epoch, l
 
     end = time.time()
 
-    for data_iter, (inputs, _) in enumerate(train_loader):
+    for data_iter, batch in enumerate(train_loader):
         optim_iter = data_iter // args.update_freq
+
+        inputs, label, motion_patch_yab, text_embed = batch
+
+        # cast text_embed to cuda
+        text_embed = text_embed.cuda(args.gpu, non_blocking=True).squeeze(1)
 
         # measure data loading time
         if args.verbose:
@@ -419,8 +486,63 @@ def train(train_loader, normalize, model, criterion, optimizer, scaler, epoch, l
         tic = time.time()
         # compute output
         with amp.autocast(enabled=not args.disable_amp):
-            outputs = model(videos, bool_masked_pos)
-            loss = criterion(outputs, target=targets)
+            outputs, embedded_patches, mapped_embedded_patches, pred_features, _, mapped_masked_pred_features, logit_scale = model(videos, bool_masked_pos)
+
+            with torch.no_grad():
+                _, _, _, _, mapped_masked_embedded_patches, _, _ = teacher_model(videos, bool_masked_pos)
+                mapped_masked_embedded_patches = F.layer_norm(mapped_masked_embedded_patches, (mapped_masked_embedded_patches.size(-1),))  # normalize over feature-dim
+
+
+
+            loss_MSE = MSE_criterion(outputs, target=targets)
+            
+
+            ####################
+            patch_wise_clip_loss = 0
+            # repeat the motion_patch_yabs for 8 times
+            motion_patch_yabs = motion_patch_yab.repeat(1,8)
+            patch_wise_clip_acc_list = []
+            for i in range (0, args.patch_iter):
+                # find one element indexes in motion_patch_yabs
+                random_index = []
+                vid_embed = []
+                x, y = torch.where(motion_patch_yabs==1)
+                for j in range(B):
+                    x_loc = torch.where(x==j)[0].numpy()
+                    # shuffle list x_loc
+                    np.random.shuffle(x_loc)
+                    # randomly select one element from the list
+                    if len(x_loc) > 0:
+                        random_index.append([j, y[x_loc[0]]])
+                    else:
+                        random_index.append([j, np.random.randint(0, 1536)])
+
+                random_index_patch = torch.tensor(random_index)
+
+                # get the random index for each video
+                video_embed = mapped_embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :] # for patch-wise
+                # video_embed = embedded_patches.mean(dim=1) # for average patch
+
+                ############################ inside bbox average
+                # # randomly select one element from the list
+                #     if len(x_loc) > 0:
+                #         vid_embed.append(mapped_embedded_patch[j, y[x_loc], :].mean(dim=0))
+                #     else:
+                #         vid_embed.append(mapped_embedded_patch[j, np.array(list(range(1536))), :].mean(dim=0))
+
+                # # get the random index for each video
+                # video_embed = torch.stack(vid_embed, dim=0)
+                ############################
+
+                clip_loss = Clip_criterion(video_embed, text_embed, logit_scale)
+                patch_wise_clip_loss = patch_wise_clip_loss + clip_loss['loss']
+                patch_wise_clip_acc_list.append(clip_loss['clip_acc'])
+            ####################
+            
+            patch_wise_clip_loss = patch_wise_clip_loss / args.patch_iter
+            FR_loss = FR_criterion(mapped_masked_embedded_patches, mapped_masked_pred_features)['loss']
+                
+            loss = loss_MSE * args.MSE_scale + patch_wise_clip_loss * args.CLIP_scale + FR_loss * args.FR_scale
             loss /= args.update_freq
 
         check_loss_nan(loss)
@@ -429,18 +551,46 @@ def train(train_loader, normalize, model, criterion, optimizer, scaler, epoch, l
         if (data_iter + 1) % args.update_freq != 0:
             continue
 
+        # # get grad norm
+        # grad_norm = get_grad_norm_(model.parameters() if not args.disable_amp else model.module.parameters(), norm_type=2)
+        # # if it's torch(inf) replace it with 0 otherwise convert it to float
+        # if torch.isinf(grad_norm):
+        #     grad_norm = torch.tensor(0.)
+
         # compute gradient and do SGD step
         if args.grad_clip_norm is not None:
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm, norm_type=2.0)
+
+            if torch.isinf(grad_norm) or torch.isnan(grad_norm):
+                grad_norm = torch.tensor(0.)
+
         scaler.step(optimizer)
         scaler.update()
         model.zero_grad(set_to_none=True)
+
+        # Note: we clamp to 4.6052 = ln(100), as in the original paper.
+        with torch.no_grad():
+            if args.distributed:
+                model.module.logit_scale.clamp_(0, math.log(100))
+            else:
+                model.logit_scale.clamp_(0, math.log(100))
+
+        # get loss scale
+        loss_scale_value = scaler.state_dict()["scale"]
 
         # torch.cuda.empty_cache()
         model_time.update(time.time() - tic)
 
         metrics['loss'].update(loss.item(), args.batch_size)
+        metrics['mse_loss'].update(loss_MSE.item(), args.batch_size)
+        metrics['clip_loss'].update(patch_wise_clip_loss.item(), args.batch_size)
+        metrics['fr_loss'].update(FR_loss.item(), args.batch_size)
+        metrics['total_loss'].update(loss.item(), args.batch_size)
+        metrics['clip_acc'].update(sum(patch_wise_clip_acc_list)/len(patch_wise_clip_acc_list), args.batch_size)
+        if args.grad_clip_norm is not None:
+            metrics['grad_norm'].update(grad_norm.item(), args.batch_size)
+        metrics['loss_scale'].update(loss_scale_value, args.batch_size)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -462,3 +612,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     main(args)
+    wandb.finish()

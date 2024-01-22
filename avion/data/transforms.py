@@ -25,6 +25,23 @@ class Permute(nn.Module):
         """
         return frames.permute(self.ordering)
 
+class Permute_BB(nn.Module):
+    """
+    Permutation as an op
+    """
+
+    def __init__(self, ordering):
+        super().__init__()
+        self.ordering = ordering
+
+    def forward(self, frames, bbox=None):
+        """
+        Args:
+            frames in some ordering, by default (C, T, H, W)
+        Returns:
+            frames in the ordering that was specified
+        """
+        return frames.permute(self.ordering), bbox
 
 class AdaptiveTemporalCrop(nn.Module):
     """

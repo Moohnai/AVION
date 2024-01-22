@@ -19,7 +19,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import ModelEmaV2, accuracy, get_state_dict
 
 from avion.data.classification_dataset import VideoClsDataset, multiple_samples_collate
-import avion.models.model_videomae as model_videomae
+import FRIL.avion.avion.models.model_FRIL as model_FRIL
 from avion.optim.layer_decay import LayerDecayValueAssigner
 from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
@@ -141,7 +141,7 @@ def main(args):
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
 
     print("=> creating model: {}".format(args.model))
-    model = getattr(model_videomae, args.model)(
+    model = getattr(model_FRIL, args.model)(
         pretrained=False,
         num_classes=args.nb_classes,
         fc_drop_rate = args.fc_drop_rate,

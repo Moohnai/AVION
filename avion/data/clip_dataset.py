@@ -1,11 +1,14 @@
 import csv
 import glob
+import math
 import os.path as osp
 import pickle
 import random
 import numpy as np
 import pandas as pd
 import torch
+import orjson
+from torchvision import tv_tensors
 
 import decord
 
@@ -75,7 +78,7 @@ def video_loader(root, vid, ext, second, end_second,
             print(error)
             frames = vr.get_batch([0] * len(frame_ids)).asnumpy()
     
-        return torch.from_numpy(frames.astype(np.float32))
+        return torch.from_numpy(frames.astype(np.float32)), frame_ids
 
     else:
         chunk_start = int(second) // chunk_len * chunk_len
@@ -119,11 +122,11 @@ def video_loader(root, vid, ext, second, end_second,
                 break
         res = torch.from_numpy(np.concatenate(all_frames, axis=0).astype(np.float32))
         assert res.shape[0] == clip_length, "{}, {}, {}, {}, {}, {}, {}".format(root, vid, second, end_second, res.shape[0], rel_frame_ids, frame_ids)
-        return res
+        return res, rel_frame_ids
 
 
 class VideoCaptionDatasetBase(torch.utils.data.Dataset):
-    def __init__(self, dataset, root, metadata, is_trimmed=True):
+    def __init__(self, dataset, root, metadata, is_trimmed=True, label_mapping=None):
         self.dataset = dataset
         self.root = root
         self.metadata = metadata
@@ -139,7 +142,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
             with open(metadata) as f:
                 csv_reader = csv.reader(f)
                 _ = next(csv_reader)  # skip the header
-                for row in csv_reader:
+                for idx, row in enumerate(csv_reader):
                     pid, vid = row[1:3]
                     start_timestamp, end_timestamp = datetime2sec(row[4]), datetime2sec(row[5])
                     narration = row[8]
@@ -148,7 +151,46 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                     fps = fps_dict[osp.join(self.root, vid_path + '.MP4')]
                     # start_frame = int(np.round(fps * start_timestamp))
                     # end_frame = int(np.ceil(fps * end_timestamp))
-                    self.samples.append((vid_path, start_timestamp, end_timestamp, fps, narration, verb, noun))
+                    self.samples.append((vid_path, start_timestamp, end_timestamp, fps, narration, verb, noun, idx))
+
+            
+            ###########################################################################################################
+            a=[label_mapping['{}:{}'.format(x[-3], x[-2])] for x in self.samples]
+            a_unique = list(set(a))
+            a_unique.sort()
+            counter = {x:0 for x in a_unique}
+            for x in a:
+                counter[x] += 1
+            # sort the dictionary based on the values
+            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+            #save in a text file
+            with open('/home/mona/whole.txt', 'w') as f:
+                for key, value in counter.items():
+                    f.write('%s:%s\n' % (key, value))
+
+            ############### classes that have more than 90 and less than 110 videos
+
+            b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
+            selected_samples = [x for x in self.samples if label_mapping['{}:{}'.format(x[-3], x[-2])] in b_unique]
+        
+
+            b=[label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
+            b_unique = list(set(b)) 
+            b_unique.sort()
+            counter = {label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
+            for x in b:
+                counter[x] += 1
+            # sort the dictionary based on the values
+            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+            #save in a text file
+            with open('/home/mona/sub_epic_middle.txt', 'w') as f:
+                for key, value in counter.items():
+                    f.write('%s:%s\n' % (key, value))
+
+            self.samples = selected_samples
+            ###########################################################################################################
+
+
             if self.dataset == 'ek100_mir':
                 self.metadata_sentence = pd.read_csv(metadata[:metadata.index('.csv')] + '_sentence.csv')
                 if 'train' in metadata:
@@ -172,7 +214,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
     ):
         if self.dataset == 'ego4d':
             vid, start_second, end_second, narration = self.samples[i][:4]
-            frames = video_loader(self.root, vid, 'mp4',
+            frames, frame_ids = video_loader(self.root, vid, 'mp4',
                                   start_second, end_second,
                                   chunk_len=chunk_len,
                                   clip_length=clip_length,
@@ -191,10 +233,10 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                     pass
                 else:
                     raise ValueError
-            return frames, narration
+            return frames, narration, frame_ids
         elif self.dataset == 'ek100_mir':
             vid_path, start_second, end_second, fps, narration, verb, noun = self.samples[i]
-            frames = video_loader(self.root, vid_path, 'MP4',
+            frames, frame_ids = video_loader(self.root, vid_path, 'MP4',
                                   start_second, end_second,
                                   chunk_len=chunk_len, fps=fps,
                                   clip_length=clip_length,
@@ -209,12 +251,12 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                 if positive_list != []:
                     pos = random.sample(positive_list, min(len(positive_list), 1))[0]
                     if pos < len(self.metadata_sentence) and pos < self.relevancy_mat.shape[1]:
-                        return frames, (self.metadata_sentence.iloc[pos][1], self.relevancy_mat[i][pos])
+                        return frames, (self.metadata_sentence.iloc[pos][1], self.relevancy_mat[i][pos]), frame_ids
             else:
-                return frames, (narration, 1)
+                return frames, (narration, 1), frame_ids
         elif self.dataset == 'ek100_cls':
-            vid_path, start_second, end_second, fps, narration, verb, noun = self.samples[i]
-            frames = video_loader(self.root, vid_path, 'MP4',
+            vid_path, start_second, end_second, fps, narration, verb, noun, idx = self.samples[i]
+            frames, frame_ids = video_loader(self.root, vid_path, 'MP4',
                                   start_second, end_second,
                                   chunk_len=chunk_len, fps=fps,
                                   clip_length=clip_length,
@@ -224,7 +266,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                                   fast_rcc=fast_rcc,
                                   rcc_params=rcc_params,
                                   jitter=is_training)
-            return frames, '{}:{}'.format(verb, noun)
+            return frames, '{}:{}'.format(verb, noun), frame_ids, idx
         else:
             raise NotImplementedError
 
@@ -356,6 +398,114 @@ class VideoClassyDataset(VideoCaptionDatasetBase):
         return frames, label
 
 
+class VideoClassyDataset_FRIL(VideoCaptionDatasetBase):
+    def __init__(
+        self, dataset, root, metadata, transform=None,
+        is_training=True, label_mapping=None,
+        num_clips=1,
+        chunk_len=300,
+        clip_length=32, clip_stride=2,
+        threads=1,
+        fast_rrc=False,
+        rrc_params=(224, (0.5, 1.0)),
+        fast_rcc=False,
+        rcc_params=(224,),
+        sparse_sample=False,
+        is_trimmed=True,
+        patch_yab_strategy = 'fully_included', # 'fully_included' or 'partially_included'
+        motion_boxes = None,
+        text_embeddings = None,
+        patch_size = (16, 16),
+        ):
+        super().__init__(dataset, root, metadata, is_trimmed=is_trimmed, label_mapping=label_mapping)
+
+        self.transform = transform
+        self.is_training = is_training
+        self.label_mapping = label_mapping
+        self.num_clips = num_clips
+        self.chunk_len = chunk_len
+        self.clip_length = clip_length
+        self.clip_stride = clip_stride
+        self.threads = threads
+        self.fast_rrc = fast_rrc
+        self.rrc_params = rrc_params
+        self.fast_rcc = fast_rcc
+        self.rcc_params = rcc_params
+        self.sparse_sample = sparse_sample
+        self.patch_yab_strategy = patch_yab_strategy
+        self.motion_boxes = motion_boxes
+        self.text_embeddings = text_embeddings
+        self.patch_size = patch_size
+
+
+    def __getitem__(self, i):
+        frames, label, frame_ids, vid_index= self.get_raw_item(
+            i, is_training=self.is_training,
+            chunk_len=self.chunk_len,
+            num_clips=self.num_clips,
+            clip_length=self.clip_length,
+            clip_stride=self.clip_stride,
+            threads=self.threads,
+            fast_rrc=self.fast_rrc,
+            rrc_params=self.rrc_params,
+            fast_rcc=self.fast_rcc,
+            rcc_params=self.rcc_params,
+            sparse_sample=self.sparse_sample,
+        )
+
+        # filter out the motion box based on frame ids
+        frames_motion_bbs = []
+        frame_ids = np.arange(len(self.motion_boxes[f'video_{vid_index}'])) ## check it
+        for idx, c in enumerate(frame_ids):
+            union_frame_bboxs = np.array([[x['box2d']["x1"], x['box2d']["y1"], x['box2d']["x2"], x['box2d']["y2"]] for x in self.motion_boxes[f'video_{vid_index}'][c]['labels']]).reshape(-1) # x1, y1, x2, y2
+            frames_motion_bbs.append(union_frame_bboxs)
+
+        frames_motion_bbs = np.array(frames_motion_bbs)  # x1, y1, x2, y2
+
+        # create a union bbox of all the frames
+        union_bbx = np.array([np.min(frames_motion_bbs[:, 0]), np.min(frames_motion_bbs[:, 1]), np.max(frames_motion_bbs[:, 2]), np.max(frames_motion_bbs[:, 3])])
+        union_frame_bb = tv_tensors.BoundingBoxes(union_bbx, format="XYXY", canvas_size=(frames.shape[1], frames.shape[2]))
+        # frames_motion_bbs = [union_bbx]*len(frames_motion_bbs)
+
+
+
+        # apply transformation
+        if self.transform is not None:
+            frames, cropped_union_frame_bb = self.transform(frames, union_frame_bb)
+
+        if self.label_mapping is not None:
+            if isinstance(label, list):
+                # multi-label case
+                res_array = np.zeros(len(self.label_mapping))
+                for lbl in label:
+                    res_array[self.label_mapping[lbl]] = 1.
+                label = res_array
+            else:
+                label = self.label_mapping[label]
+
+        #create a matrix with the size of the image and fill it with 1 in the bbox area
+        motion_patch_yab_size = [ frames.size()[-2]//self.patch_size[0], frames.size()[-1]//self.patch_size[1]]
+        motion_patch_yab = torch.zeros(motion_patch_yab_size[-2], motion_patch_yab_size[-1])
+        union_bbx = cropped_union_frame_bb[0]
+        if self.patch_yab_strategy == 'partially_included':
+            x_start = math.ceil(union_bbx[0]/self.patch_size[0])
+            x_end = math.floor(union_bbx[2]/self.patch_size[0])
+            y_start = math.ceil(union_bbx[1]/self.patch_size[1])
+            y_end = math.floor(union_bbx[3]/self.patch_size[1])
+            motion_patch_yab[x_start:x_end-1, y_start:y_end-1] = 1
+            
+        if self.patch_yab_strategy == 'fully_included':
+            x_start = math.floor(union_bbx[0]/self.patch_size[0])
+            x_end = math.ceil(union_bbx[2]/self.patch_size[0])
+            y_start = math.floor(union_bbx[1]/self.patch_size[1])
+            y_end = math.ceil(union_bbx[3]/self.patch_size[1])
+            motion_patch_yab[x_start:x_end-1, y_start:y_end-1] = 1
+
+
+
+        return frames, label, motion_patch_yab.transpose(1, 0).flatten(), self.text_embeddings[f'video_{vid_index}']
+
+
 def get_downstream_dataset(transform, crop_size, args, subset='train', label_mapping=None):
     if subset == 'train':
         return VideoClassyDataset(
@@ -378,5 +528,40 @@ def get_downstream_dataset(transform, crop_size, args, subset='train', label_map
             fast_rcc=args.fused_decode_crop, rcc_params=(crop_size, ),
             is_trimmed=not args.dataset == 'charades_ego',
         )
+    else:
+        assert ValueError("subset should be either 'train' or 'val'")
+
+
+def get_pretrain_dataset_FRIL(transform, crop_size, args, subset='train', label_mapping=None):
+    if subset == 'train':
+        # load motion box
+        with open(args.motion_box_path, "r", encoding="utf-8") as f:
+            motion_boxes = orjson.loads(f.read())
+
+        # load text embeddings
+        text_embeddings = torch.load(args.embedded_text_path)
+        return VideoClassyDataset_FRIL(
+            args.dataset, args.root, args.train_metadata, transform,
+            is_training=True, label_mapping=label_mapping,
+            num_clips=args.num_clips,
+            chunk_len=args.video_chunk_length,
+            clip_length=args.clip_length, clip_stride=args.clip_stride,
+            threads=args.decode_threads,
+            fast_rrc=args.fused_decode_crop, rrc_params=(crop_size, (0.5, 1.0)),
+            motion_boxes=motion_boxes,
+            text_embeddings=text_embeddings,
+            patch_size=args.patch_size,
+        )
+    # elif subset == 'val':
+    #     return VideoClassyDataset_FRIL(
+    #         args.dataset, args.root, args.val_metadata, transform,
+    #         is_training=False, label_mapping=label_mapping,
+    #         num_clips=args.num_clips,
+    #         chunk_len=args.video_chunk_length,
+    #         clip_length=args.clip_length, clip_stride=args.clip_stride,
+    #         threads=args.decode_threads,
+    #         fast_rcc=args.fused_decode_crop, rcc_params=(crop_size, ),
+    #         is_trimmed=not args.dataset == 'charades_ego',
+    #     )
     else:
         assert ValueError("subset should be either 'train' or 'val'")

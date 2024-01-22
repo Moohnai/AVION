@@ -1,7 +1,10 @@
 import csv
 import math
 import sys
+from typing import Dict, List, Optional, Tuple
 import torch
+from torch import inf, Tensor
+from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype, _has_foreach_support
 
 
 def check_loss_nan(loss):
@@ -46,8 +49,8 @@ def generate_label_map(dataset):
         vn_list = []
         mapping_vn2narration = {}
         for f in [
-            '/home/mona/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
-            '/home/mona/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
+            '/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
+            '/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
         ]:
             csv_reader = csv.reader(open(f))
             _ = next(csv_reader)  # skip the header
@@ -93,3 +96,44 @@ def generate_label_map(dataset):
     else:
         raise NotImplementedError
     return labels, mapping_vn2act
+
+def get_grad_norm_(parameters, norm_type: float = 2.0, foreach: Optional[bool] = None) -> torch.Tensor:
+    # if isinstance(parameters, torch.Tensor):
+    #     parameters = [parameters]
+    # parameters = [p for p in parameters if p.grad is not None]
+    # norm_type = float(norm_type)
+    # if len(parameters) == 0:
+    #     return torch.tensor(0.)
+    # device = parameters[0].grad.device
+    # if norm_type == inf:
+    #     total_norm = max(p.grad.detach().abs().max().to(device) for p in parameters)
+    # else:
+    #     total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), norm_type).to(device) for p in parameters]), norm_type)
+    # return total_norm
+
+    if isinstance(parameters, torch.Tensor):
+        parameters = [parameters]
+    grads = [p.grad for p in parameters if p.grad is not None]
+    norm_type = float(norm_type)
+    if len(grads) == 0:
+        return torch.tensor(0.)
+    first_device = grads[0].device
+    grouped_grads: Dict[Tuple[torch.device, torch.dtype], List[List[Tensor]]] \
+        = _group_tensors_by_device_and_dtype([[g.detach() for g in grads]])  # type: ignore[assignment]
+
+    if norm_type == inf:
+        norms = [torch.linalg.vector_norm(g.detach(), inf).to(first_device) for g in grads]
+        total_norm = norms[0] if len(norms) == 1 else torch.max(torch.stack(norms))
+    else:
+        norms = []
+        for ((device, _), ([grads], _)) in grouped_grads.items():  # type: ignore[assignment]
+            if (foreach is None or foreach) and _has_foreach_support(grads, device=device):
+                norms.extend(torch._foreach_norm(grads, norm_type))
+            elif foreach:
+                raise RuntimeError(f'foreach=True was passed, but can\'t use the foreach API on {device.type} tensors')
+            else:
+                norms.extend([torch.linalg.vector_norm(g, norm_type) for g in grads])
+
+        total_norm = torch.linalg.vector_norm(torch.stack([norm.to(first_device) for norm in norms]), norm_type)
+
+    return total_norm

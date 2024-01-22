@@ -200,3 +200,41 @@ class MaxMarginRankingLoss(nn.Module):
             'loss': max_margin.mean(),
             'max_margin_loss': max_margin.mean()
         }
+
+class Feature_Reconstruction_Loss(nn.Module):
+    def __init__(
+        self
+        ):
+        super().__init__()
+        # self.loss = nn.CrossEntropyLoss()
+        # self.loss = nn.KLDivLoss()
+        # self.loss = nn.MSELoss()
+
+    def forward(self, input, target):
+        # input = input.softmax(dim=-1)
+        # target = target.softmax(dim=-1)
+        # input = F.log_softmax(input, dim=-1)
+        # target = F.softmax(target, dim=-1)
+        # loss = self.loss(input, target)
+
+        loss = F.smooth_l1_loss(input, target)
+        loss = AllReduce.apply(loss)
+
+        return {'loss': loss}
+    
+class AllReduce(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x):
+        if (
+            dist.is_available()
+            and dist.is_initialized()
+            and (dist.get_world_size() > 1)
+        ):
+            x = x.contiguous() / dist.get_world_size()
+            dist.all_reduce(x)
+        return x
+
+    @staticmethod
+    def backward(ctx, grads):
+        return grads
