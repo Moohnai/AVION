@@ -74,25 +74,26 @@ def get_args_parser():
     parser.set_defaults(use_grad_checkpointing=True)
     parser.add_argument('--use-flash-attn-at-encoder', action='store_true', dest='use_flash_attn_at_encoder')
     parser.add_argument('--disable-flash-attn-at-encoder', action='store_false', dest='use_flash_attn_at_encoder')
-    parser.set_defaults(use_flash_attn_at_encoder=False)
+    parser.set_defaults(use_flash_attn_at_encoder=True)
     parser.add_argument('--use-flash-attn-at-decoder', action='store_true', dest='use_flash_attn_at_decoder')
     parser.add_argument('--disable-flash-attn-at-decoder', action='store_false', dest='use_flash_attn_at_decoder')
-    parser.set_defaults(use_flash_attn_at_decoder=False)
+    parser.set_defaults(use_flash_attn_at_decoder=True)
     parser.add_argument('--drop-path-rate', default=0., type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     parser.add_argument('--normalize-target', action='store_true', dest='normalize_target')
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
+    parser.add_argument('--run_name', default='new_pretrain_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
     parser.add_argument('--epochs', default=800, type=int)
-    parser.add_argument('--warmup-epochs', default=40, type=int)
+    parser.add_argument('--warmup-epochs', default=20, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=25, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=64, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
-    parser.add_argument('--lr', default=1.2e-4, type=float) # 1.5e-4 #best for epic:1.2e-4
+    parser.add_argument('--lr', default=1.5e-4, type=float) # 1.5e-4 #best for epic:1.2e-4
     parser.add_argument('--fix-lr', action='store_true', help='disable cosine lr decay if set True')
     parser.add_argument('--lr-start', default=1e-6, type=float, help='initial warmup lr')
     parser.add_argument('--lr-end', default=1e-5, type=float, help='minimum final lr')
@@ -156,16 +157,22 @@ def main(args):
     model.cuda(args.gpu)
     teacher_model = copy.deepcopy(model)
 
+    # add scale values to the run name
+    args.run_name = args.run_name + "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
+        + str(args.CLIP_scale) + "__FR_scale=" + str(args.FR_scale) + "__ssvli_iter=" + str(args.patch_iter) \
+            + "_" + str(args.epochs) + "_epochs_totalbatch=" + str(args.batch_size * dist_utils.get_world_size()) \
+                + "_lr=" + str(args.lr) 
+
     # initialize wandb
-    run_name = "new_pretrain_FRIL_sub_epic_Kitchens_with_caption_MSE_scale=0,CLIP_scale=0,FR_scale=1,ssvli_iter=10_800_epochs_batch128_accum=1"
     wandb.init(
         project="ssvli_epic",
         group="pretrained",
-        name=run_name,
+        name=args.run_name,
         config=args,
         )
+    
     # append the run name to the output_dir
-    args.output_dir = os.path.join(args.output_dir, run_name)
+    args.output_dir = os.path.join(args.output_dir, args.run_name)
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -280,7 +287,7 @@ def main(args):
         base_train_transform_ls = [
             Permute_BB([0, 3, 1, 2]),
             v2.RandomResizedCrop(crop_size, scale=(0.5, 1.0), antialias=True),
-            v2.Normalize(mean, std),
+            v2.RandomHorizontalFlip(0.5),
             Permute_BB([1, 0, 2, 3]),
         ]
         gpu_train_transform_ls = []
@@ -294,7 +301,6 @@ def main(args):
             Permute_BB([0, 3, 1, 2]),
             v2.Resize(crop_size, antialias=True),
             v2.CenterCrop(crop_size),
-            v2.Normalize(mean, std),
             Permute_BB([1, 0, 2, 3]),
         ]
         gpu_val_transform_ls = []
@@ -363,6 +369,10 @@ def main(args):
         # train for one epoch
         if args.distributed:
             train_loader.sampler.set_epoch(epoch)
+
+        # measure epoch time
+        epoch_start_time = time.time()
+
         train_stats = train(
             train_loader, 
             normalize, 
@@ -376,6 +386,9 @@ def main(args):
             epoch, 
             lr_schedule, 
             args)
+        
+        epoch_time = time.time() - epoch_start_time
+        print('Epoch time: {}'.format(datetime.timedelta(seconds=epoch_time)))
 
         # wandb log
         wandb_dict = {}

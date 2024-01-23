@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from timm.models.layers import drop_path, to_2tuple, trunc_normal_
 import torch.utils.checkpoint as checkpoint
 
+import flash_attn
 from flash_attn.modules.mha import MHA as FlashMHA
 
 
@@ -113,7 +114,11 @@ class Block(nn.Module):
                 dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 attn_drop=attn_drop, proj_drop=drop, attn_head_dim=attn_head_dim)
         else:
-            self.attn = FlashMHA(dim, num_heads, cross_attn=False, bias=qkv_bias, dropout=attn_drop, use_flash_attn=True)
+            # if flash_attn version is less than 1.0.0
+            if flash_attn.__version__[0] == '0':
+                self.attn = FlashMHA(dim, num_heads, cross_attn=False, bias=qkv_bias, dropout=attn_drop, use_flash_attn=True)
+            else:
+                self.attn = FlashMHA(dim, num_heads, cross_attn=False, qkv_proj_bias=qkv_bias, dropout=attn_drop, use_flash_attn=True)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -770,9 +775,12 @@ class FRAIL_PretrainVisionTransformer(nn.Module):
                  channel_last=False,
                  num_classes=0, # avoid the error from create_fn in timm
                  in_chans=0, # avoid the error from create_fn in timm
+                 text_embed_dim=768,
                  ):
         super().__init__()
         self.decoder_embed_dim = decoder_embed_dim
+        self.encoder_embed_dim = encoder_embed_dim
+        self.text_embed_dim = text_embed_dim
         self.encoder = FRAIL_PretrainVisionTransformerEncoder(
             img_size=img_size, 
             patch_size=patch_size, 
@@ -818,6 +826,10 @@ class FRAIL_PretrainVisionTransformer(nn.Module):
         self.v2t_mapping = Mlp(in_features=encoder_embed_dim, hidden_features=int(encoder_embed_dim * mlp_ratio), 
                             act_layer=nn.GELU, drop=0,
                             out_features=int(encoder_embed_dim))
+        
+        self.t_mapping = Mlp(in_features=decoder_embed_dim, hidden_features=int(decoder_embed_dim * mlp_ratio), 
+                            act_layer=nn.GELU, drop=0,
+                            out_features=int(text_embed_dim))
 
         self.encoder_to_decoder = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=False)
 
@@ -861,8 +873,11 @@ class FRAIL_PretrainVisionTransformer(nn.Module):
         x_full = torch.cat([x_vis + pos_emd_vis, self.mask_token + pos_emd_mask], dim=1) # [B, N, C_d]
         x, pred_feature = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
 
-        mapped_masked_embedded_patch = mapped_embedded_patch[mask].reshape(b, -1, self.decoder_embed_dim)
-        mapped_masked_pred_feature = self.v2t_mapping(pred_feature[mask].reshape(b, -1, self.decoder_embed_dim))
+        # make the pred_feature dim equal to the text feature dim
+        pred_feature = self.t_mapping(pred_feature)
+
+        mapped_masked_embedded_patch = mapped_embedded_patch[mask].reshape(b, -1, self.text_embed_dim)
+        mapped_masked_pred_feature = self.v2t_mapping(pred_feature[mask].reshape(b, -1, self.text_embed_dim))
 
         return x, embedded_patch, mapped_embedded_patch, pred_feature, mapped_masked_embedded_patch, mapped_masked_pred_feature, self.logit_scale.exp()
 
@@ -900,7 +915,7 @@ def FRIL_VITB16(pretrained=False, **kwargs):
         encoder_num_heads=12,
         encoder_num_classes=0,
         decoder_num_classes=1536,
-        decoder_embed_dim=768, # 384
+        decoder_embed_dim=384,
         decoder_num_heads=6,
         mlp_ratio=4, 
         qkv_bias=True,
