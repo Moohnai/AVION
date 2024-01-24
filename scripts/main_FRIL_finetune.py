@@ -9,6 +9,7 @@ import time
 from einops import rearrange
 import kornia as K
 import numpy as np
+import pandas as pd
 from sklearn.metrics import top_k_accuracy_score
 import torch
 import torch.cuda.amp as amp
@@ -17,6 +18,7 @@ from timm.data.loader import MultiEpochsDataLoader
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import ModelEmaV2, accuracy, get_state_dict
+import wandb
 
 from avion.data.classification_dataset import VideoClsDataset, multiple_samples_collate
 import FRIL.avion.avion.models.model_FRIL as model_FRIL
@@ -25,31 +27,34 @@ from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
 from avion.utils.meters import AverageMeter, ProgressMeter
-from avion.utils.misc import check_loss_nan, interpolate_pos_embed
+from avion.utils.misc import check_loss_nan, interpolate_pos_embed, generate_label_map
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser(description='VideoMAE fine-tune', add_help=False)
+    parser = argparse.ArgumentParser(description='FRIL fine-tune', add_help=False)
+    parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_cls'])
     parser.add_argument('--root',
-                        default='datasets/Kinetics/train_320px/',
+                        default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
                         type=str, help='path to train dataset root')
     parser.add_argument('--root-val',
-                        default='datasets/Kinetics/val_320px/',
+                        default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
                         type=str, help='path to val dataset root')
     parser.add_argument('--train-metadata',
-                        default='datasets/Kinetics/annotations/k400_320p_train_list.txt',
+                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
                         type=str, help='metadata for train split')
     parser.add_argument('--val-metadata',
-                        default='datasets/Kinetics/annotations/k400_val_list.txt',
+                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
                         type=str, help='metadata for val split')
-    parser.add_argument('--output-dir', default='./', type=str, help='output dir')
+    parser.add_argument('--output-dir', default='/home/mona/FRIL/avion/results/finetune/', type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
+    parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
+    parser.add_argument('--video-chunk-length', default=15, type=int)
     parser.add_argument('--clip-stride', default=4, type=int, help='clip stride')
     parser.add_argument('--use-pin-memory', action='store_true', dest='use_pin_memory')
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
-    parser.add_argument('--nb-classes', default=400, type=int)
+    parser.add_argument('--nb-classes', default=3806, type=int, help='number of classes, EK100: 3806, SSV2: 174')
     # augmentation
     parser.add_argument('--repeated-aug', default=1, type=int)
     parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
@@ -76,10 +81,10 @@ def get_args_parser():
     parser.set_defaults(channel_last=False)
     parser.add_argument('--grad-checkpointing', action='store_true', dest='use_grad_checkpointing')
     parser.add_argument('--no-grad-checkpointing', action='store_false', dest='use_grad_checkpointing')
-    parser.set_defaults(use_grad_checkpointing=False)
+    parser.set_defaults(use_grad_checkpointing=True)
     parser.add_argument('--use-flash-attn', action='store_true', dest='use_flash_attn')
     parser.add_argument('--disable-flash-attn', action='store_false', dest='use_flash_attn')
-    parser.set_defaults(use_flash_attn=False)
+    parser.set_defaults(use_flash_attn=True)
     parser.add_argument('--fc-drop-rate', default=0.0, type=float)
     parser.add_argument('--drop-rate', default=0.0, type=float)
     parser.add_argument('--attn-drop-rate', default=0.0, type=float)
@@ -90,9 +95,11 @@ def get_args_parser():
     parser.add_argument('--model-key', default='model|module|state_dict', type=str)
     # model ema
     parser.add_argument('--model-ema', action='store_true', default=False)
+    parser.set_defaults(model_ema=True)
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
+    parser.add_argument('--run_name', default='new_finetune_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -154,6 +161,20 @@ def main(args):
     )
     model.cuda(args.gpu)
 
+    # add scale values to the run name
+    args.run_name = args.run_name + "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
+        + str(args.CLIP_scale) + "__FR_scale=" + str(args.FR_scale) + "__ssvli_iter=" + str(args.patch_iter) \
+            + "_" + str(args.epochs) + "_epochs_totalbatch=" + str(args.batch_size * dist_utils.get_world_size()) \
+                + "_lr=" + str(args.lr) 
+
+    # initialize wandb
+    wandb.init(
+        project="ssvli_epic",
+        group="finetune",
+        name=args.run_name,
+        config=args,
+        )
+
     if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(args.finetune, map_location='cpu', check_hash=True)
@@ -170,7 +191,7 @@ def main(args):
                 break
         if checkpoint_model is None:
             checkpoint_model = checkpoint
-        for key in ['head.weight', 'head.bias']:
+        for key in ['head.weight', 'head.bias']: ## modify here to remove extra keys
             if key in checkpoint_model and checkpoint_model[key].shape != model.state_dict()[key].shape:
                 print("Removing key %s from pretrained checkpoint" % key)
                 checkpoint_model.pop(key)
@@ -337,6 +358,17 @@ def main(args):
                   .format(latest, latest_checkpoint['epoch']))
 
     torch.backends.cudnn.benchmark = True
+
+    # build dataset
+    if args.dataset == 'ek100_cls':
+        _, mapping_vn2act = generate_label_map(args.dataset)
+        # add mamapping_vn2act to args
+        args.label_mapping = mapping_vn2act
+        args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in mapping_vn2act.items()}
+        args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in mapping_vn2act.items()}
+        args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
+    num_clips_at_val = args.num_clips
+    args.num_clips = 1
 
     train_dataset = VideoClsDataset(
         args.root, args.train_metadata, mode='train', 

@@ -1,6 +1,9 @@
 import os
 import numpy as np
 import decord
+import glob
+import os.path as osp
+import csv
 
 from pytorchvideo.transforms import RandAugment, Normalize
 import torch
@@ -10,15 +13,73 @@ import torchvision
 from avion.data.random_erasing import RandomErasing
 from avion.data.transforms import Permute, AdaptiveTemporalCrop, SpatialCrop
 
+def datetime2sec(str):
+    hh, mm, ss = str.split(':')
+    return int(hh) * 3600 + int(mm) * 60 + float(ss)
 
-def read_metadata(metadata_fname):
+def read_metadata(metadata_fname, root=None, args=None,):
     samples = []
-    with open(metadata_fname) as split_f:
-        data = split_f.readlines()
-        for line in data:
-            line_info = line.split(' ')
-            assert len(line_info) == 3
-            samples.append((line_info[0], int(line_info[1]), int(line_info[2])))
+    if args.dataset == 'ek100_cls':
+        video_list = glob.glob(osp.join(root, '*/*.MP4'))
+        fps_dict = {video: decord.VideoReader(video + '/0.MP4').get_avg_fps() for video in video_list}
+        with open(metadata_fname) as f:
+            csv_reader = csv.reader(f)
+            _ = next(csv_reader)  # skip the header
+            for idx, row in enumerate(csv_reader):
+                pid, vid = row[1:3]
+                start_timestamp, end_timestamp = datetime2sec(row[4]), datetime2sec(row[5])
+                narration = row[8]
+                verb, noun = int(row[10]), int(row[12])
+                vid_path = '{}/{}'.format(pid, vid)
+                fps = fps_dict[osp.join(root, vid_path + '.MP4')]
+                # start_frame = int(np.round(fps * start_timestamp))
+                # end_frame = int(np.ceil(fps * end_timestamp))
+                samples.append((vid_path, start_timestamp, end_timestamp, fps, narration, verb, noun, idx))
+
+        
+        ###########################################################################################################
+        a=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in samples]
+        a_unique = list(set(a))
+        a_unique.sort()
+        counter = {x:0 for x in a_unique}
+        for x in a:
+            counter[x] += 1
+        # sort the dictionary based on the values
+        counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #save in a text file
+        with open('/home/mona/whole.txt', 'w') as f:
+            for key, value in counter.items():
+                f.write('%s:%s\n' % (key, value))
+
+        ############### classes that have more than 90 and less than 110 videos
+
+        b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
+        selected_samples = [x for x in samples if args.label_mapping['{}:{}'.format(x[-3], x[-2])] in b_unique]
+    
+
+        b=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
+        b_unique = list(set(b)) 
+        b_unique.sort()
+        counter = {args.label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
+        for x in b:
+            counter[x] += 1
+        # sort the dictionary based on the values
+        counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #save in a text file
+        with open('/home/mona/sub_epic_middle.txt', 'w') as f:
+            for key, value in counter.items():
+                f.write('%s:%s\n' % (key, value))
+
+        samples = selected_samples
+        ###########################################################################################################
+
+    else:
+        with open(metadata_fname) as split_f:
+            data = split_f.readlines()
+            for line in data:
+                line_info = line.split(' ')
+                assert len(line_info) == 3
+                samples.append((line_info[0], int(line_info[1]), int(line_info[2])))
     return samples
 
 
@@ -40,7 +101,7 @@ class VideoClsDataset(torch.utils.data.Dataset):
                   test_num_segment=5, test_num_crop=3,
                   args=None):
         self.root = root
-        self.samples = read_metadata(metadata)
+        self.samples = read_metadata(metadata, root, args)
         assert mode in ['train', 'validation', 'test']
         self.mode = mode
         self.clip_length = clip_length

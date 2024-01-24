@@ -40,7 +40,7 @@ from avion.utils.misc import check_loss_nan, generate_label_map, get_grad_norm_
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser(description='VideoMAE pretrain', add_help=False)
+    parser = argparse.ArgumentParser(description='FRIL pretrain', add_help=False)
     parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_mir'])
     parser.add_argument('--root',
                         default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
@@ -49,7 +49,7 @@ def get_args_parser():
                         default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv')
     parser.add_argument('--val-metadata', type=str,
                         default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv')
-    parser.add_argument('--output-dir', default='/home/mona/FRIL/avion/results/', type=str, help='output dir')
+    parser.add_argument('--output-dir', default='/home/mona/FRIL/avion/results/pretrain/', type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
