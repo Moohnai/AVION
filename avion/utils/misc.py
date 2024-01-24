@@ -1,5 +1,6 @@
 import csv
 import math
+import os
 import sys
 from typing import Dict, List, Optional, Tuple
 import torch
@@ -43,14 +44,14 @@ def interpolate_pos_embed(old_pos_embed, model, num_frames):
         return old_pos_embed
 
 
-def generate_label_map(dataset):
+def generate_label_map(dataset, root=''):
     if dataset == 'ek100_cls':
         print("Preprocess ek100 action label space")
         vn_list = []
         mapping_vn2narration = {}
         for f in [
-            '/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
-            '/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
+            os.path.join(root, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
+            os.path.join(root, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
         ]:
             csv_reader = csv.reader(open(f))
             _ = next(csv_reader)  # skip the header

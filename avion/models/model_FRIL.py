@@ -294,7 +294,7 @@ class VisionTransformer(nn.Module):
 
         if self.use_checkpoint:
             for blk in self.blocks:
-                x = checkpoint.checkpoint(blk, x)
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
         else:   
             for blk in self.blocks:
                 x = blk(x)
@@ -389,7 +389,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
 
         if self.use_checkpoint:
             for blk in self.blocks:
-                x_vis = checkpoint.checkpoint(blk, x_vis)
+                x_vis = checkpoint.checkpoint(blk, x_vis, use_reentrant=False)
         else:   
             for blk in self.blocks:
                 x_vis = blk(x_vis)
@@ -479,7 +479,7 @@ class FRAIL_PretrainVisionTransformerEncoder(nn.Module):
 
         if self.use_checkpoint:
             for blk in self.blocks:
-                x_vis = checkpoint.checkpoint(blk, x_vis)
+                x_vis = checkpoint.checkpoint(blk, x_vis, use_reentrant=False)
         else:   
             for blk in self.blocks:
                 x_vis = blk(x_vis)
@@ -548,7 +548,7 @@ class PretrainVisionTransformerDecoder(nn.Module):
     def forward(self, x, return_token_num):
         if self.use_checkpoint:
             for blk in self.blocks:
-                x = checkpoint.checkpoint(blk, x)
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
         else:   
             for blk in self.blocks:
                 x = blk(x)
@@ -615,8 +615,8 @@ class FRAIL_PretrainVisionTransformerDecoder(nn.Module):
     def forward(self, x, return_token_num):
         if self.use_checkpoint:
             for blk in self.blocks:
-                x = checkpoint.checkpoint(blk, x)
-            pred_features = checkpoint.checkpoint(nn.Identity(), x)
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+            pred_features = checkpoint.checkpoint(nn.Identity(), x, use_reentrant=False)
         else:   
             for blk in self.blocks:
                 x = blk(x)

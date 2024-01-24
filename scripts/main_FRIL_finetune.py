@@ -4,6 +4,7 @@ import datetime
 from functools import partial
 import json
 import os
+from pathlib import Path
 import time
 
 from einops import rearrange
@@ -18,10 +19,18 @@ from timm.data.loader import MultiEpochsDataLoader
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.utils import ModelEmaV2, accuracy, get_state_dict
+from sklearn.metrics import f1_score
 import wandb
 
-from avion.data.classification_dataset import VideoClsDataset, multiple_samples_collate
-import FRIL.avion.avion.models.model_FRIL as model_FRIL
+# find the path to the current file
+current_path = os.path.dirname(os.path.realpath(__file__))
+parent_path = os.path.dirname(current_path)
+# add parent path to the system path
+import sys
+sys.path.append(parent_path)
+
+from avion.data.classification_dataset import VideoClsDataset_FRIL, multiple_samples_collate
+import avion.models.model_FRIL as model_FRIL
 from avion.optim.layer_decay import LayerDecayValueAssigner
 from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
@@ -34,23 +43,25 @@ def get_args_parser():
     parser = argparse.ArgumentParser(description='FRIL fine-tune', add_help=False)
     parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_cls'])
     parser.add_argument('--root',
-                        default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
+                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
                         type=str, help='path to train dataset root')
     parser.add_argument('--root-val',
-                        default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
+                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
                         type=str, help='path to val dataset root')
     parser.add_argument('--train-metadata',
-                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv',
+                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
                         type=str, help='metadata for train split')
     parser.add_argument('--val-metadata',
-                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv',
+                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
                         type=str, help='metadata for val split')
-    parser.add_argument('--output-dir', default='/home/mona/FRIL/avion/results/finetune/', type=str, help='output dir')
+    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/finetune/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
     parser.add_argument('--video-chunk-length', default=15, type=int)
     parser.add_argument('--clip-stride', default=4, type=int, help='clip stride')
+    parser.add_argument('--test-num-segment', default=5, type=int, help='number of segments for testing')
+    parser.add_argument('--test-num-crop', default=3, type=int, help='number of crops for testing')
     parser.add_argument('--use-pin-memory', action='store_true', dest='use_pin_memory')
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
@@ -103,7 +114,7 @@ def get_args_parser():
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
-    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--epochs', default=10, type=int)
     parser.add_argument('--warmup-epochs', default=5, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
     parser.add_argument('--batch-size', default=32, type=int, help='number of samples per-device/per-gpu')
@@ -146,6 +157,8 @@ def get_args_parser():
 def main(args):
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     print("=> creating model: {}".format(args.model))
     model = getattr(model_FRIL, args.model)(
@@ -162,10 +175,8 @@ def main(args):
     model.cuda(args.gpu)
 
     # add scale values to the run name
-    args.run_name = args.run_name + "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
-        + str(args.CLIP_scale) + "__FR_scale=" + str(args.FR_scale) + "__ssvli_iter=" + str(args.patch_iter) \
-            + "_" + str(args.epochs) + "_epochs_totalbatch=" + str(args.batch_size * dist_utils.get_world_size()) \
-                + "_lr=" + str(args.lr) 
+    args.run_name = args.run_name + "_" + str(args.epochs) + "_epochs_totalbatch=" \
+        + str(args.batch_size * dist_utils.get_world_size()) + "_lr=" + str(args.lr) 
 
     # initialize wandb
     wandb.init(
@@ -174,6 +185,11 @@ def main(args):
         name=args.run_name,
         config=args,
         )
+
+    # append the run name to the output_dir
+    args.output_dir = os.path.join(args.output_dir, args.run_name)
+    if args.output_dir:
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     if args.finetune:
         if args.finetune.startswith('https'):
@@ -242,8 +258,7 @@ def main(args):
         model_ema = ModelEmaV2(
             model,
             decay=args.model_ema_decay,
-            device='cpu' if args.model_ema_force_cpu else '',
-            resume=''
+            device='cpu' if args.model_ema_force_cpu else device,
         )
         print("Using EMA with decay = %.8f" % args.model_ema_decay)
 
@@ -353,7 +368,7 @@ def main(args):
             model.load_state_dict(latest_checkpoint['state_dict'])
             optimizer.load_state_dict(latest_checkpoint['optimizer'])
             scaler.load_state_dict(latest_checkpoint['scaler'])
-            best_acc1 = checkpoint['best_acc1'] if hasattr(checkpoint, 'best_acc1') else 0
+            best_acc1 = latest_checkpoint['best_acc1'] if hasattr(latest_checkpoint, 'best_acc1') else 0
             print("=> loaded latest checkpoint '{}' (epoch {})"
                   .format(latest, latest_checkpoint['epoch']))
 
@@ -361,7 +376,7 @@ def main(args):
 
     # build dataset
     if args.dataset == 'ek100_cls':
-        _, mapping_vn2act = generate_label_map(args.dataset)
+        _, mapping_vn2act = generate_label_map(args.dataset, root=parent_path)
         # add mamapping_vn2act to args
         args.label_mapping = mapping_vn2act
         args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in mapping_vn2act.items()}
@@ -370,22 +385,22 @@ def main(args):
     num_clips_at_val = args.num_clips
     args.num_clips = 1
 
-    train_dataset = VideoClsDataset(
+    train_dataset = VideoClsDataset_FRIL(
         args.root, args.train_metadata, mode='train', 
         clip_length=args.clip_length, clip_stride=args.clip_stride,
         args=args,
     )
 
-    val_dataset = VideoClsDataset(
+    val_dataset = VideoClsDataset_FRIL(
         args.root_val, args.val_metadata, mode='validation',
         clip_length=args.clip_length, clip_stride=args.clip_stride,
         args=args,
     )
 
-    test_dataset = VideoClsDataset(
+    test_dataset = VideoClsDataset_FRIL(
         args.root_val, args.val_metadata, mode='test',
         clip_length=args.clip_length, clip_stride=args.clip_stride,
-        test_num_segment=5, test_num_crop=3,
+        test_num_segment=args.test_num_segment, test_num_crop=args.test_num_crop,
         args=args,
     )
 
@@ -450,6 +465,15 @@ def main(args):
             scaler, epoch, model_ema, mixup_fn,
             lr_schedule, wd_schedule, args,
         )
+        
+        # wandb log
+        wandb_dict = {}
+        for key, value in train_stats.items():
+            wandb_dict["train_epoch_"+key] = value
+        wandb.log(wandb_dict, step=epoch)
+        
+        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                     'epoch': epoch}
 
         if (epoch + 1) % args.save_freq == 0:
             print("=> saving checkpoint")
@@ -467,6 +491,13 @@ def main(args):
         if (epoch + 1) % args.val_freq == 0:
             print("=> validate")
             val_stats = validate(val_loader, model, epoch, args)
+            
+            # wandb log
+            wandb_dict = {}
+            for key, value in val_stats.items():
+                wandb_dict["val_epoch_"+key] = value
+            wandb.log(wandb_dict, step=epoch)
+        
             if best_acc1 < val_stats['acc1']:
                 best_acc1 = val_stats['acc1']
                 if args.use_zero:
@@ -481,13 +512,31 @@ def main(args):
                         'args': args,
                         'model_ema': get_state_dict(model_ema) if model_ema is not None else None,
                     }, True, args.output_dir)
-
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     'epoch': epoch}
+                
+            # add val_stats to log_stats
+            log_stats = {**log_stats, **{f'val_{k}': v for k, v in val_stats.items()}}        
 
         if dist_utils.is_main_process():
             with open(os.path.join(args.output_dir, 'log.txt'), 'a') as f:
                 f.write(json.dumps(log_stats) + '\n')
+                
+    print("=> testing")
+    # clear cuda cache
+    torch.cuda.empty_cache()
+    
+    test_stats = test(test_loader, model, args, len(test_dataset))
+    
+    # wandb log
+    wandb_dict = {}
+    for key, value in test_stats.items():
+        wandb_dict["test_epoch_"+key] = value
+    wandb.log(wandb_dict, step=epoch)
+    
+    log_stats = {**{f'test_{k}': v for k, v in test_stats.items()}}
+    
+    if dist_utils.is_main_process():
+        with open(os.path.join(args.output_dir, 'log.txt'), 'a') as f:
+            f.write(json.dumps(log_stats) + '\n')
         
 def train(train_loader, model, criterion, optimizer,
           scaler, epoch, model_ema, mixup_fn,
@@ -582,7 +631,7 @@ def validate(val_loader, model, epoch, args):
     data_time = AverageMeter('Data', ':6.2f')
     model_time = AverageMeter('Model', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = ['loss', 'acc1', 'acc5']
+    metric_names = ['loss', 'acc1', 'acc5', 'f1_score']
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
         len(val_loader),
@@ -607,6 +656,7 @@ def validate(val_loader, model, epoch, args):
                 loss = criterion(outputs, targets)
 
             acc1, acc5 = accuracy(outputs, targets, topk=(1, 5))
+            f1score = f1_score(targets.detach().cpu(), torch.argmax(outputs, 1).detach().cpu(), average="micro")
 
             # torch.cuda.empty_cache()
             model_time.update(time.time() - tic)
@@ -614,6 +664,7 @@ def validate(val_loader, model, epoch, args):
             metrics['loss'].update(loss.item(), args.batch_size)
             metrics['acc1'].update(acc1.item(), args.batch_size)
             metrics['acc5'].update(acc5.item(), args.batch_size)
+            metrics['f1_score'].update(f1score, args.batch_size)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -633,7 +684,7 @@ def test(test_loader, model, args, num_videos):
     data_time = AverageMeter('Data', ':6.2f')
     model_time = AverageMeter('Model', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = ['loss', 'acc1', 'acc5']
+    metric_names = ['loss', 'acc1', 'acc5', 'f1_score']
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
         len(test_loader),
@@ -665,19 +716,25 @@ def test(test_loader, model, args, num_videos):
                 loss = criterion(logits, targets_repeated)
 
             acc1, acc5 = accuracy(logits, targets_repeated, topk=(1, 5))
+            f1score = f1_score(targets_repeated.detach().cpu(), torch.argmax(logits, 1).detach().cpu(), average="micro")
 
             logits = rearrange(logits, '(b n) k -> b n k', b=this_batch_size)
             probs = torch.softmax(logits, dim=2)
             gathered_logits = [torch.zeros_like(logits) for _ in range(args.world_size)]
             gathered_probs = [torch.zeros_like(probs) for _ in range(args.world_size)]
             gathered_targets = [torch.zeros_like(targets) for _ in range(args.world_size)]
-            torch.distributed.all_gather(gathered_logits, logits)
-            torch.distributed.all_gather(gathered_probs, probs)
-            torch.distributed.all_gather(gathered_targets, targets)
-            for j in range(args.world_size):
-                all_logits[j].append(gathered_logits[j].detach().cpu())
-                all_probs[j].append(gathered_probs[j].detach().cpu())
-                all_targets[j].append(gathered_targets[j].detach().cpu())
+            if args.distributed:
+                torch.distributed.all_gather(gathered_logits, logits)
+                torch.distributed.all_gather(gathered_probs, probs)
+                torch.distributed.all_gather(gathered_targets, targets)
+                for j in range(args.world_size):
+                    all_logits[j].append(gathered_logits[j].detach().cpu())
+                    all_probs[j].append(gathered_probs[j].detach().cpu())
+                    all_targets[j].append(gathered_targets[j].detach().cpu())
+            else:
+                all_logits[0].append(logits.detach().cpu())
+                all_probs[0].append(probs.detach().cpu())
+                all_targets[0].append(targets.detach().cpu())
 
             # torch.cuda.empty_cache()
             model_time.update(time.time() - tic)
@@ -685,6 +742,7 @@ def test(test_loader, model, args, num_videos):
             metrics['loss'].update(loss.item(), this_batch_size)
             metrics['acc1'].update(acc1.item(), this_batch_size)
             metrics['acc5'].update(acc5.item(), this_batch_size)
+            metrics['f1_score'].update(f1score, this_batch_size)
             total_num += logits.shape[0] * args.world_size
 
             # measure elapsed time
@@ -711,6 +769,12 @@ def test(test_loader, model, args, num_videos):
     all_logits = all_logits[:num_videos, :].mean(axis=1)
     all_probs = all_probs[:num_videos, :].mean(axis=1)
     all_targets = all_targets[:num_videos, ]
+    # for Epic-Kitchens that does not have all classes in test set
+    if args.dataset == 'ek100_cls':
+        unique_targets = np.unique(all_targets)
+        # filter out classes that are not in unique_targets in all_logits and all_probs
+        all_logits = all_logits[:, unique_targets]
+        all_probs = all_probs[:, unique_targets]
     acc1 = top_k_accuracy_score(all_targets, all_logits, k=1)
     acc5 = top_k_accuracy_score(all_targets, all_logits, k=5)
     print('[Average logits] Overall top1={:.3f} top5={:.3f}'.format(acc1, acc5))

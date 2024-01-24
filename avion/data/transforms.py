@@ -59,6 +59,11 @@ class AdaptiveTemporalCrop(nn.Module):
     def forward(self, video):
         assert video.ndim == 4, "Must be (C, T, H, W)"
         res = []
+        ####################################
+        # if video.size(1) is less than frames_per_clip, then we need to repeat the frames
+        if video.size(1) < self.frames * self.frame_stride:
+            video = video.repeat(1, math.ceil(self.frames * self.frame_stride / video.size(1)), 1, 1)
+        ####################################
         temporal_step = max(
             (video.size(1) - self.frames * self.frame_stride) / (self.num_segment - 1), 0
         )

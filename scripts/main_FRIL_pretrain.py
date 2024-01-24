@@ -22,9 +22,12 @@ import torchvision.transforms._transforms_video as transforms_video
 import torchvision
 from timm.data.loader import MultiEpochsDataLoader
 
-# add avion to python path
+# find the path to the current file
+current_path = os.path.dirname(os.path.realpath(__file__))
+parent_path = os.path.dirname(current_path)
+# add parent path to the system path
 import sys
-sys.path.append("/home/mona/FRIL/avion/")
+sys.path.append(parent_path)
 
 from avion.data.clip_dataset import get_pretrain_dataset_FRIL
 from avion.data.kinetics_dataset import KineticsDataset
@@ -43,13 +46,13 @@ def get_args_parser():
     parser = argparse.ArgumentParser(description='FRIL pretrain', add_help=False)
     parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_mir'])
     parser.add_argument('--root',
-                        default='/home/mona/FRIL/avion/datasets/EK100/EK100_320p_15sec_30fps_libx264',
+                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
                         type=str, help='path to train dataset root')
     parser.add_argument('--train-metadata', type=str,
-                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv')
+                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),)
     parser.add_argument('--val-metadata', type=str,
-                        default='/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv')
-    parser.add_argument('--output-dir', default='/home/mona/FRIL/avion/results/pretrain/', type=str, help='output dir')
+                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),)
+    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/pretrain/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
