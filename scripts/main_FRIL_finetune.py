@@ -11,7 +11,8 @@ from einops import rearrange
 import kornia as K
 import numpy as np
 import pandas as pd
-from sklearn.metrics import top_k_accuracy_score
+import scipy
+from sklearn.metrics import top_k_accuracy_score, confusion_matrix
 import torch
 import torch.cuda.amp as amp
 from torch.distributed.optim import ZeroRedundancyOptimizer
@@ -37,6 +38,7 @@ from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan, interpolate_pos_embed, generate_label_map
+from avion.utils.evaluation_ek100cls import get_marginal_indexes, get_mean_accuracy, marginalize
 
 
 def get_args_parser():
@@ -65,7 +67,7 @@ def get_args_parser():
     parser.add_argument('--use-pin-memory', action='store_true', dest='use_pin_memory')
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
-    parser.add_argument('--nb-classes', default=3806, type=int, help='number of classes, EK100: 3806, SSV2: 174')
+    parser.add_argument('--nb-classes', default=35, type=int, help='number of classes, EK100: 3806, SSV2: 174')
     # augmentation
     parser.add_argument('--repeated-aug', default=1, type=int)
     parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
@@ -102,6 +104,7 @@ def get_args_parser():
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     # fine-tune
+    # parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/new_pretrain_FRIL_sub_epic_Kitchens_with_caption__MSE_scale=0__CLIP_scale=0__FR_scale=1__ssvli_iter=10_800_epochs_totalbatch=256_lr=0.00015/checkpoint_00500.pt', help='fine-tune path')
     parser.add_argument('--finetune', default='', help='fine-tune path')
     parser.add_argument('--model-key', default='model|module|state_dict', type=str)
     # model ema
@@ -110,14 +113,14 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='new_finetune_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='pure_new_finetune_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
-    parser.add_argument('--epochs', default=10, type=int)
+    parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--warmup-epochs', default=5, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=32, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=16, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
     parser.add_argument('--lr', default=1.5e-3, type=float)
     parser.add_argument('--layer-decay', type=float, default=0.75)
@@ -404,6 +407,12 @@ def main(args):
         args=args,
     )
 
+    ###### update train_dataset, val_dataset, and test_dataset with args
+    train_dataset.label_mapping = args.label_mapping
+    val_dataset.label_mapping = args.label_mapping
+    test_dataset.label_mapping = args.label_mapping
+    ######
+
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
@@ -498,8 +507,8 @@ def main(args):
                 wandb_dict["val_epoch_"+key] = value
             wandb.log(wandb_dict, step=epoch)
         
-            if best_acc1 < val_stats['acc1']:
-                best_acc1 = val_stats['acc1']
+            if best_acc1 < val_stats['Acc@1']:
+                best_acc1 = val_stats['Acc@1']
                 if args.use_zero:
                     print('consolidated on rank {} because of ZeRO'.format(args.rank))
                     optimizer.consolidate_state_dict(to=args.rank)
@@ -545,7 +554,7 @@ def train(train_loader, model, criterion, optimizer,
     data_time = AverageMeter('Data', ':6.2f')
     model_time = AverageMeter('Model', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = ['loss']
+    metric_names = ['loss', 'Acc@1', 'Acc@5', 'Noun Acc@1', 'Verb Acc@1']
     iters_per_epoch = len(train_loader) // args.update_freq
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
@@ -576,6 +585,7 @@ def train(train_loader, model, criterion, optimizer,
 
         videos = inputs[0].cuda(args.gpu, non_blocking=True)
         targets = inputs[1].cuda(args.gpu, non_blocking=True)
+        org_targets = targets.clone()
 
         if mixup_fn is not None:
             videos, targets = mixup_fn(videos, targets)
@@ -614,6 +624,22 @@ def train(train_loader, model, criterion, optimizer,
         batch_time.update(time.time() - end)
         end = time.time()
 
+        outputs = torch.softmax(outputs, dim=1)
+        acc1, acc5 = accuracy(outputs, org_targets, topk=(1, 5))
+        metrics['Acc@1'].update(acc1.item(), videos.size(0))
+        metrics['Acc@5'].update(acc5.item(), videos.size(0))
+        if args.dataset == 'ek100_cls':
+            vi = get_marginal_indexes(args.actions, 'verb')
+            ni = get_marginal_indexes(args.actions, 'noun')
+            verb_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), vi)).cuda(args.gpu, non_blocking=True)
+            noun_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), ni)).cuda(args.gpu, non_blocking=True)
+            target_to_verb = torch.tensor([args.mapping_act2v[a] for a in org_targets.tolist()]).cuda(args.gpu, non_blocking=True)
+            target_to_noun = torch.tensor([args.mapping_act2n[a] for a in org_targets.tolist()]).cuda(args.gpu, non_blocking=True)
+            acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
+            acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
+            metrics['Verb Acc@1'].update(acc1_verb.item(), videos.size(0))
+            metrics['Noun Acc@1'].update(acc1_noun.item(), videos.size(0))
+
         mem.update(torch.cuda.max_memory_allocated() // 1e9)
 
         if optim_iter % args.print_freq == 0:
@@ -631,7 +657,7 @@ def validate(val_loader, model, epoch, args):
     data_time = AverageMeter('Data', ':6.2f')
     model_time = AverageMeter('Model', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = ['loss', 'acc1', 'acc5', 'f1_score']
+    metric_names = ['loss', 'Acc@1', 'Acc@5', 'f1_score', 'Noun Acc@1', 'Verb Acc@1']
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
         len(val_loader),
@@ -655,15 +681,27 @@ def validate(val_loader, model, epoch, args):
                 outputs = model(videos)
                 loss = criterion(outputs, targets)
 
+            outputs = torch.softmax(outputs, dim=1)
             acc1, acc5 = accuracy(outputs, targets, topk=(1, 5))
             f1score = f1_score(targets.detach().cpu(), torch.argmax(outputs, 1).detach().cpu(), average="micro")
+            metrics['Acc@1'].update(acc1.item(), videos.size(0))
+            metrics['Acc@5'].update(acc5.item(), videos.size(0))
+            if args.dataset == 'ek100_cls':
+                vi = get_marginal_indexes(args.actions, 'verb')
+                ni = get_marginal_indexes(args.actions, 'noun')
+                verb_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), vi)).cuda(args.gpu, non_blocking=True)
+                noun_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), ni)).cuda(args.gpu, non_blocking=True)
+                target_to_verb = torch.tensor([args.mapping_act2v[a] for a in targets.tolist()]).cuda(args.gpu, non_blocking=True)
+                target_to_noun = torch.tensor([args.mapping_act2n[a] for a in targets.tolist()]).cuda(args.gpu, non_blocking=True)
+                acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
+                acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
+                metrics['Verb Acc@1'].update(acc1_verb.item(), videos.size(0))
+                metrics['Noun Acc@1'].update(acc1_noun.item(), videos.size(0))
 
             # torch.cuda.empty_cache()
             model_time.update(time.time() - tic)
 
             metrics['loss'].update(loss.item(), args.batch_size)
-            metrics['acc1'].update(acc1.item(), args.batch_size)
-            metrics['acc5'].update(acc5.item(), args.batch_size)
             metrics['f1_score'].update(f1score, args.batch_size)
 
             # measure elapsed time
@@ -684,7 +722,7 @@ def test(test_loader, model, args, num_videos):
     data_time = AverageMeter('Data', ':6.2f')
     model_time = AverageMeter('Model', ':6.2f')
     mem = AverageMeter('Mem (GB)', ':6.1f')
-    metric_names = ['loss', 'acc1', 'acc5', 'f1_score']
+    metric_names = ['loss', 'Acc@1', 'Acc@5', 'f1_score', 'Noun Acc@1', 'Verb Acc@1']
     metrics = OrderedDict([(name, AverageMeter(name, ':.2e')) for name in metric_names])
     progress = ProgressMeter(
         len(test_loader),
@@ -740,8 +778,8 @@ def test(test_loader, model, args, num_videos):
             model_time.update(time.time() - tic)
 
             metrics['loss'].update(loss.item(), this_batch_size)
-            metrics['acc1'].update(acc1.item(), this_batch_size)
-            metrics['acc5'].update(acc5.item(), this_batch_size)
+            metrics['Acc@1'].update(acc1.item(), this_batch_size)
+            metrics['Acc@5'].update(acc5.item(), this_batch_size)
             metrics['f1_score'].update(f1score, this_batch_size)
             total_num += logits.shape[0] * args.world_size
 
@@ -775,12 +813,33 @@ def test(test_loader, model, args, num_videos):
         # filter out classes that are not in unique_targets in all_logits and all_probs
         all_logits = all_logits[:, unique_targets]
         all_probs = all_probs[:, unique_targets]
-    acc1 = top_k_accuracy_score(all_targets, all_logits, k=1)
-    acc5 = top_k_accuracy_score(all_targets, all_logits, k=5)
-    print('[Average logits] Overall top1={:.3f} top5={:.3f}'.format(acc1, acc5))
-    acc1 = top_k_accuracy_score(all_targets, all_probs, k=1)
-    acc5 = top_k_accuracy_score(all_targets, all_probs, k=5)
-    print('[Average probs ] Overall top1={:.3f} top5={:.3f}'.format(acc1, acc5))
+    
+    for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
+        if s == 'logits': all_preds = scipy.special.softmax(all_preds, axis=1)
+        acc1 = top_k_accuracy_score(all_targets, all_preds, k=1, labels=np.arange(0, args.num_classes))
+        acc5 = top_k_accuracy_score(all_targets, all_preds, k=5, labels=np.arange(0, args.num_classes))
+        dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
+        print('[Average {s}] {dataset} * Acc@1 {top1:.3f} Acc@5 {top5:.3f}'.format(s=s, dataset=dataset, top1=acc1, top5=acc5))
+        cm = confusion_matrix(all_targets, all_preds.argmax(axis=1))
+        mean_acc, acc = get_mean_accuracy(cm)
+        print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
+
+        if args.dataset == 'ek100_cls':
+            vi = get_marginal_indexes(args.actions, 'verb')
+            ni = get_marginal_indexes(args.actions, 'noun')
+            verb_scores = marginalize(all_preds, vi)
+            noun_scores = marginalize(all_preds, ni)
+            target_to_verb = np.array([args.mapping_act2v[a] for a in all_targets.tolist()])
+            target_to_noun = np.array([args.mapping_act2n[a] for a in all_targets.tolist()])
+            cm = confusion_matrix(target_to_verb, verb_scores.argmax(axis=1))
+            _, acc = get_mean_accuracy(cm)
+            print('Verb Acc@1: {:.3f}'.format(acc))
+            metrics['Verb Acc@1'] = acc
+            cm = confusion_matrix(target_to_noun, noun_scores.argmax(axis=1))
+            _, acc = get_mean_accuracy(cm)
+            print('Noun Acc@1: {:.3f}'.format(acc))
+            metrics['Noun Acc@1'] = acc
+
     return {k: v.avg for k, v in metrics.items()}
 
 

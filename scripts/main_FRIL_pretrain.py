@@ -35,7 +35,7 @@ from torchvision.transforms import v2
 from avion.data.transforms import GroupMultiScaleCrop, Permute, TubeMaskingGeneratorGPU, Permute_BB
 import avion.models.model_FRIL as model_FRIL
 from avion.optim.lion import Lion
-from avion.optim.schedulers import cosine_scheduler
+from avion.optim.schedulers import cosine_scheduler, cyclic_decay_cosine_scheduler
 from avion.losses.losses import ClipLoss, Feature_Reconstruction_Loss
 import avion.utils.distributed as dist_utils
 from avion.utils.meters import AverageMeter, ProgressMeter
@@ -87,7 +87,7 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='new_pretrain_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='new_LR_schedule(500)_pretrain_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -358,6 +358,11 @@ def main(args):
             args.lr, args.lr_end, args.epochs, len(train_loader) // args.update_freq,
             warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start
         )
+        # lr_schedule = cyclic_decay_cosine_scheduler(
+        #     args.lr, args.lr_end, args.epochs, len(train_loader) // args.update_freq,
+        #     warmup_epochs=args.warmup_epochs, start_warmup_value=args.lr_start,
+        #     decay_coef=0.9, warmup_decay_coef=0.8, cycle_epochs=[800],
+        # )
 
     # -- momentum schedule
     ipe = len(train_loader)

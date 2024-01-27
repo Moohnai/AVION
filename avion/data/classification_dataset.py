@@ -4,6 +4,7 @@ import decord
 import glob
 import os.path as osp
 import csv
+import pandas as pd
 
 from pytorchvideo.transforms import RandAugment, Normalize
 import torch
@@ -94,6 +95,16 @@ def read_metadata(metadata_fname, root=None, args=None, mode='train'):
                     f.write('%s:%s\n' % (key, value))
             
             samples = selected_samples#[:80]
+
+        if mode == 'test':
+            # update label_mapping based on the selected classes
+            args.label_mapping = {k: v for k, v in args.label_mapping.items() if v in args.sub_unique_classes}
+            # reset values of the label_mapping to be in the range of 0 to len(args.label_mapping)
+            args.label_mapping = {k: i for i, (k, v) in enumerate(args.label_mapping.items())}
+            # update the mapping_act2v, mapping_act2n, and actions
+            args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in args.label_mapping.items()}
+            args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in args.label_mapping.items()}
+            args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
         ###########################################################################################################
 
     else:
