@@ -8,6 +8,7 @@
 ```bash
 cd FRIL/avion
 PYTHONPATH=.:third_party/decord/python/ nohup torchrun --nproc_per_node=4 scripts/main_FRIL_pretrain.py 
+nohup torchrun --nproc_per_node=4 scripts/main_FRIL_finetune.py
 ```
 
 ```bash

@@ -98,14 +98,17 @@ def get_args_parser():
     parser.add_argument('--use-flash-attn', action='store_true', dest='use_flash_attn')
     parser.add_argument('--disable-flash-attn', action='store_false', dest='use_flash_attn')
     parser.set_defaults(use_flash_attn=True)
+    parser.add_argument('--use-registers', action='store_true', dest='use_registers')
+    parser.set_defaults(use_registers=False)
+    parser.add_argument('--num-registers', default=8, type=int)
     parser.add_argument('--fc-drop-rate', default=0.0, type=float)
     parser.add_argument('--drop-rate', default=0.0, type=float)
     parser.add_argument('--attn-drop-rate', default=0.0, type=float)
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     # fine-tune
-    # parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/new_pretrain_FRIL_sub_epic_Kitchens_with_caption__MSE_scale=0__CLIP_scale=0__FR_scale=1__ssvli_iter=10_800_epochs_totalbatch=256_lr=0.00015/checkpoint_00500.pt', help='fine-tune path')
-    parser.add_argument('--finetune', default='', help='fine-tune path')
+    parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain/pretrain_FRIL_sub_epic_Kitchens_with_caption__MSE_scale=0__CLIP_scale=1__FR_scale=1__ssvli_iter=10_800_epochs_totalbatch=240_lr=0.00015/checkpoint.pt', help='fine-tune path')
+    # parser.add_argument('--finetune', default='', help='fine-tune path')
     parser.add_argument('--model-key', default='model|module|state_dict', type=str)
     # model ema
     parser.add_argument('--model-ema', action='store_true', default=False)
@@ -113,7 +116,7 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='pure_new_finetune_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='FR_CLIP_iter_10_new_finetune_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)

@@ -87,14 +87,14 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='new_LR_schedule(500)_pretrain_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='pretrain_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
     parser.add_argument('--epochs', default=800, type=int)
     parser.add_argument('--warmup-epochs', default=20, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=64, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=60, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
     parser.add_argument('--lr', default=1.5e-4, type=float) # 1.5e-4 #best for epic:1.2e-4
     parser.add_argument('--fix-lr', action='store_true', help='disable cosine lr decay if set True')
@@ -116,8 +116,9 @@ def get_args_parser():
                         default="/home/mona/FRIL/avion/datasets/EK100/epic_embedded_mix_captions_train_dict.pt", 
                         help='path to embedded text')
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
-    parser.add_argument('--CLIP_scale', default=0, type=float, help='the weight of clip loss')
+    parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
     parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
+    parser.add_argument('--FR-strategy', default='patch', type=str, help='the strategy of feature reconstruction loss', choices=['patch', 'average'])
     parser.add_argument('--patch_iter', default=10, type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
                         help='EMA momentum schedule (default: 0.996 1.0)')
@@ -314,7 +315,7 @@ def main(args):
     val_transform_gpu = torch.nn.Sequential(*gpu_val_transform_ls)
 
     # build dataset
-    _, mapping_vn2act = generate_label_map(args.dataset)
+    _, mapping_vn2act = generate_label_map(args.dataset, root=parent_path)
     if args.dataset == 'ek100_cls':
         args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in mapping_vn2act.items()}
         args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in mapping_vn2act.items()}
@@ -519,48 +520,55 @@ def train(
             
 
             ####################
-            patch_wise_clip_loss = 0
-            # repeat the motion_patch_yabs for 8 times
-            motion_patch_yabs = motion_patch_yab.repeat(1,8)
-            patch_wise_clip_acc_list = []
-            for i in range (0, args.patch_iter):
-                # find one element indexes in motion_patch_yabs
-                random_index = []
-                vid_embed = []
-                x, y = torch.where(motion_patch_yabs==1)
-                for j in range(B):
-                    x_loc = torch.where(x==j)[0].numpy()
-                    # shuffle list x_loc
-                    np.random.shuffle(x_loc)
-                    # randomly select one element from the list
-                    if len(x_loc) > 0:
-                        random_index.append([j, y[x_loc[0]]])
-                    else:
-                        random_index.append([j, np.random.randint(0, 1536)])
+            if args.FR_strategy == 'patch':
+                patch_wise_clip_loss = 0
+                # repeat the motion_patch_yabs for 8 times
+                motion_patch_yabs = motion_patch_yab.repeat(1,8)
+                patch_wise_clip_acc_list = []
+                for i in range (0, args.patch_iter):
+                    # find one element indexes in motion_patch_yabs
+                    random_index = []
+                    vid_embed = []
+                    x, y = torch.where(motion_patch_yabs==1)
+                    for j in range(B):
+                        x_loc = torch.where(x==j)[0].numpy()
+                        # shuffle list x_loc
+                        np.random.shuffle(x_loc)
+                        # randomly select one element from the list
+                        if len(x_loc) > 0:
+                            random_index.append([j, y[x_loc[0]]])
+                        else:
+                            random_index.append([j, np.random.randint(0, 1536)])
 
-                random_index_patch = torch.tensor(random_index)
+                    random_index_patch = torch.tensor(random_index)
 
-                # get the random index for each video
-                video_embed = mapped_embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :] # for patch-wise
-                # video_embed = embedded_patches.mean(dim=1) # for average patch
+                    # get the random index for each video
+                    video_embed = mapped_embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :] # for patch-wise
+                    # video_embed = embedded_patches.mean(dim=1) # for average patch
 
-                ############################ inside bbox average
-                # # randomly select one element from the list
-                #     if len(x_loc) > 0:
-                #         vid_embed.append(mapped_embedded_patch[j, y[x_loc], :].mean(dim=0))
-                #     else:
-                #         vid_embed.append(mapped_embedded_patch[j, np.array(list(range(1536))), :].mean(dim=0))
+                    ############################ inside bbox average
+                    # # randomly select one element from the list
+                    #     if len(x_loc) > 0:
+                    #         vid_embed.append(mapped_embedded_patch[j, y[x_loc], :].mean(dim=0))
+                    #     else:
+                    #         vid_embed.append(mapped_embedded_patch[j, np.array(list(range(1536))), :].mean(dim=0))
 
-                # # get the random index for each video
-                # video_embed = torch.stack(vid_embed, dim=0)
-                ############################
+                    # # get the random index for each video
+                    # video_embed = torch.stack(vid_embed, dim=0)
+                    ############################
 
+                    clip_loss = Clip_criterion(video_embed, text_embed, logit_scale)
+                    patch_wise_clip_loss = patch_wise_clip_loss + clip_loss['loss']
+                    patch_wise_clip_acc_list.append(clip_loss['clip_acc'])
+                ####################
+                
+                patch_wise_clip_loss = patch_wise_clip_loss / args.patch_iter
+            elif args.FR_strategy == 'average':
+                video_embed = embedded_patches.mean(dim=1)
                 clip_loss = Clip_criterion(video_embed, text_embed, logit_scale)
-                patch_wise_clip_loss = patch_wise_clip_loss + clip_loss['loss']
-                patch_wise_clip_acc_list.append(clip_loss['clip_acc'])
-            ####################
-            
-            patch_wise_clip_loss = patch_wise_clip_loss / args.patch_iter
+                patch_wise_clip_loss = clip_loss['loss']
+                patch_wise_clip_acc_list = [clip_loss['clip_acc']]
+                
             FR_loss = FR_criterion(mapped_masked_embedded_patches, mapped_masked_pred_features)['loss']
                 
             loss = loss_MSE * args.MSE_scale + patch_wise_clip_loss * args.CLIP_scale + FR_loss * args.FR_scale
@@ -608,7 +616,7 @@ def train(
         metrics['clip_loss'].update(patch_wise_clip_loss.item(), args.batch_size)
         metrics['fr_loss'].update(FR_loss.item(), args.batch_size)
         metrics['total_loss'].update(loss.item(), args.batch_size)
-        metrics['clip_acc'].update(sum(patch_wise_clip_acc_list)/len(patch_wise_clip_acc_list), args.batch_size)
+        metrics['clip_acc'].update((sum(patch_wise_clip_acc_list)/len(patch_wise_clip_acc_list)).item(), args.batch_size)
         if args.grad_clip_norm is not None:
             metrics['grad_norm'].update(grad_norm.item(), args.batch_size)
         metrics['loss_scale'].update(loss_scale_value, args.batch_size)

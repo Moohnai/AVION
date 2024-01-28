@@ -1,5 +1,5 @@
 from functools import partial
-from einops import rearrange
+from einops import pack, rearrange, repeat, unpack
 import numpy as np
 import torch
 import torch.nn as nn
@@ -219,7 +219,8 @@ class VisionTransformer(nn.Module):
                  channel_last=False,
                  use_checkpoint=False,
                  use_flash_attn=False,
-                 use_mean_pooling=True):
+                 use_mean_pooling=True,
+                 args=None,):
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
@@ -261,6 +262,13 @@ class VisionTransformer(nn.Module):
         self.head.weight.data.mul_(init_scale)
         self.head.bias.data.mul_(init_scale)
 
+        # if registers are enabled
+        self.use_registers = args.use_registers
+        if args.use_registers:
+            self.register_tokens = nn.Parameter(
+                torch.randn(args.num_registers, embed_dim)
+            )
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
@@ -292,12 +300,26 @@ class VisionTransformer(nn.Module):
             x = x + self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
         x = self.pos_drop(x)
 
+        if self.use_registers:
+            #repeat register token
+            r = repeat(
+                self.register_tokens, 
+                'n d -> b n d', 
+                b=B
+            )
+            #pack cls token and register token
+            x, ps = pack([x, r], 'b * d ')
+
         if self.use_checkpoint:
             for blk in self.blocks:
                 x = checkpoint.checkpoint(blk, x, use_reentrant=False)
         else:   
             for blk in self.blocks:
                 x = blk(x)
+
+        if self.use_registers:
+            #unpack cls token and register token
+            x, _ = unpack(x, ps, 'b * d')
 
         x = self.norm(x)
         if self.fc_norm is not None:
