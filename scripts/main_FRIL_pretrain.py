@@ -118,7 +118,7 @@ def get_args_parser():
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
     parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
     parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
-    parser.add_argument('--FR-strategy', default='patch', type=str, help='the strategy of feature reconstruction loss', choices=['patch', 'average'])
+    parser.add_argument('--CLIP-strategy', default='average', type=str, help='the strategy of CLIP', choices=['patch', 'average'])
     parser.add_argument('--patch_iter', default=10, type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
                         help='EMA momentum schedule (default: 0.996 1.0)')
@@ -165,7 +165,7 @@ def main(args):
     args.run_name = args.run_name + "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
         + str(args.CLIP_scale) + "__FR_scale=" + str(args.FR_scale) + "__ssvli_iter=" + str(args.patch_iter) \
             + "_" + str(args.epochs) + "_epochs_totalbatch=" + str(args.batch_size * dist_utils.get_world_size()) \
-                + "_lr=" + str(args.lr) 
+                + "_lr=" + str(args.lr) + "_CLIP_strategy=" + args.CLIP_strategy
 
     # initialize wandb
     wandb.init(
@@ -520,7 +520,7 @@ def train(
             
 
             ####################
-            if args.FR_strategy == 'patch':
+            if args.CLIP_strategy == 'patch':
                 patch_wise_clip_loss = 0
                 # repeat the motion_patch_yabs for 8 times
                 motion_patch_yabs = motion_patch_yab.repeat(1,8)
@@ -563,7 +563,7 @@ def train(
                 ####################
                 
                 patch_wise_clip_loss = patch_wise_clip_loss / args.patch_iter
-            elif args.FR_strategy == 'average':
+            elif args.CLIP_strategy == 'average':
                 video_embed = embedded_patches.mean(dim=1)
                 clip_loss = Clip_criterion(video_embed, text_embed, logit_scale)
                 patch_wise_clip_loss = clip_loss['loss']
