@@ -118,14 +118,14 @@ def get_args_parser():
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
     parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
     parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
-    parser.add_argument('--CLIP-strategy', default='average', type=str, help='the strategy of CLIP', choices=['patch', 'average'])
-    parser.add_argument('--patch_iter', default=10, type=int, help='the number of iterations for patch-wise clip loss')
+    parser.add_argument('--CLIP-strategy', default='patch', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
+    parser.add_argument('--patch_iter', default=30, type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
                         help='EMA momentum schedule (default: 0.996 1.0)')
     parser.add_argument('--ipe_scale', type=float, default=1.0, metavar='M',
                         help='Inverse proportionality constant for EMA momentum schedule (default: 1.0)')
     # system
-    parser.add_argument('--print-freq', default=10, type=int, help='print frequency')
+    parser.add_argument('--print-freq', default=20, type=int, help='print frequency')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                         help='number of data loading workers per process')
@@ -165,7 +165,9 @@ def main(args):
     args.run_name = args.run_name + "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
         + str(args.CLIP_scale) + "__FR_scale=" + str(args.FR_scale) + "__ssvli_iter=" + str(args.patch_iter) \
             + "_" + str(args.epochs) + "_epochs_totalbatch=" + str(args.batch_size * dist_utils.get_world_size()) \
-                + "_lr=" + str(args.lr) + "_CLIP_strategy=" + args.CLIP_strategy
+                + "_lr=" + str(args.lr) 
+    if args.CLIP_scale > 0:
+        args.run_name = args.run_name + "_CLIP_strategy=" + args.CLIP_strategy
 
     # initialize wandb
     wandb.init(
@@ -520,7 +522,7 @@ def train(
             
 
             ####################
-            if args.CLIP_strategy == 'patch':
+            if args.CLIP_strategy == 'patch' or args.CLIP_strategy == 'patch-average':
                 patch_wise_clip_loss = 0
                 # repeat the motion_patch_yabs for 8 times
                 motion_patch_yabs = motion_patch_yab.repeat(1,8)
@@ -536,14 +538,26 @@ def train(
                         np.random.shuffle(x_loc)
                         # randomly select one element from the list
                         if len(x_loc) > 0:
-                            random_index.append([j, y[x_loc[0]]])
+                            if args.CLIP_strategy == 'patch':
+                                random_index.append([j, y[x_loc[0]]])
+                            elif args.CLIP_strategy == 'patch-average':
+                                random_index.append([ [j] + y[x_loc].tolist()])
+                                vid_embed.append(mapped_embedded_patches[j, y[x_loc], :].mean(dim=0))
                         else:
-                            random_index.append([j, np.random.randint(0, 1536)])
+                            if args.CLIP_strategy == 'patch':
+                                random_index.append([j, np.random.randint(0, 1536)])
+                            elif args.CLIP_strategy == 'patch-average':
+                                random_index.append([ [j] + np.random.randint(0, 1536, size=8).tolist() ])
+                                vid_embed.append(mapped_embedded_patches[j, np.array(list(range(1536))), :].mean(dim=0))
 
-                    random_index_patch = torch.tensor(random_index)
+                    if args.CLIP_strategy == 'patch':
+                        random_index_patch = torch.tensor(random_index)
 
                     # get the random index for each video
-                    video_embed = mapped_embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :] # for patch-wise
+                    if args.CLIP_strategy == 'patch':
+                        video_embed = mapped_embedded_patches[random_index_patch[:,0], random_index_patch[:,1], :] # for patch-wise
+                    elif args.CLIP_strategy == 'patch-average':
+                        video_embed = torch.stack(vid_embed, dim=0)
                     # video_embed = embedded_patches.mean(dim=1) # for average patch
 
                     ############################ inside bbox average
@@ -568,7 +582,7 @@ def train(
                 clip_loss = Clip_criterion(video_embed, text_embed, logit_scale)
                 patch_wise_clip_loss = clip_loss['loss']
                 patch_wise_clip_acc_list = [clip_loss['clip_acc']]
-                
+
             FR_loss = FR_criterion(mapped_masked_embedded_patches, mapped_masked_pred_features)['loss']
                 
             loss = loss_MSE * args.MSE_scale + patch_wise_clip_loss * args.CLIP_scale + FR_loss * args.FR_scale
