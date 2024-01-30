@@ -424,7 +424,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         x = self.head(x)
         return x
 
-class FRAIL_PretrainVisionTransformerEncoder(nn.Module):
+class FRILS_PretrainVisionTransformerEncoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=0, embed_dim=768, depth=12,
@@ -582,7 +582,7 @@ class PretrainVisionTransformerDecoder(nn.Module):
 
         return x
 
-class FRAIL_PretrainVisionTransformerDecoder(nn.Module):
+class FRILS_PretrainVisionTransformerDecoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
     def __init__(self, patch_size=16, num_classes=768, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4.,
@@ -766,7 +766,7 @@ class PretrainVisionTransformer(nn.Module):
 
         return x
 
-class FRAIL_PretrainVisionTransformer(nn.Module):
+class FRILS_PretrainVisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
     def __init__(self,
@@ -803,7 +803,7 @@ class FRAIL_PretrainVisionTransformer(nn.Module):
         self.decoder_embed_dim = decoder_embed_dim
         self.encoder_embed_dim = encoder_embed_dim
         self.text_embed_dim = text_embed_dim
-        self.encoder = FRAIL_PretrainVisionTransformerEncoder(
+        self.encoder = FRILS_PretrainVisionTransformerEncoder(
             img_size=img_size, 
             patch_size=patch_size, 
             in_chans=encoder_in_chans, 
@@ -826,7 +826,7 @@ class FRAIL_PretrainVisionTransformer(nn.Module):
             channel_last=channel_last,
         )
 
-        self.decoder = FRAIL_PretrainVisionTransformerDecoder(
+        self.decoder = FRILS_PretrainVisionTransformerDecoder(
             patch_size=patch_size, 
             num_patches=self.encoder.patch_embed.num_patches,
             num_classes=decoder_num_classes, 
@@ -928,8 +928,8 @@ def VIDEOMAE_VITB16(pretrained=False, **kwargs):
     return model
 
 
-def FRIL_VITB16(pretrained=False, **kwargs):
-    model = FRAIL_PretrainVisionTransformer(
+def FRILS_VITB16(pretrained=False, **kwargs):
+    model = FRILS_PretrainVisionTransformer(
         img_size=224,
         patch_size=16, 
         encoder_embed_dim=768, 

@@ -67,7 +67,7 @@ def get_args_parser():
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
     # model
-    parser.add_argument('--model', default='FRIL_VITB16', type=str)
+    parser.add_argument('--model', default='FRILS_VITB16', type=str)
     parser.add_argument('--channel-last', action='store_true', dest='channel_last')
     parser.add_argument('--disable-channel-last', action='store_false', dest='channel_last')
     parser.set_defaults(channel_last=False)
@@ -87,7 +87,7 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pretrain_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='pretrain_FRIL_all_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -115,11 +115,11 @@ def get_args_parser():
     parser.add_argument('--embedded_text_path', 
                         default="/home/mona/FRIL/avion/datasets/EK100/epic_embedded_mix_captions_train_dict.pt", 
                         help='path to embedded text')
-    parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
-    parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
-    parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
+    parser.add_argument('--MSE_scale', default=1, type=float, help='the weight of MSE loss')
+    parser.add_argument('--CLIP_scale', default=0, type=float, help='the weight of clip loss')
+    parser.add_argument('--FR_scale', default=0, type=float, help='the weight of feature reconstruction loss')
     parser.add_argument('--CLIP-strategy', default='patch', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
-    parser.add_argument('--patch_iter', default=30, type=int, help='the number of iterations for patch-wise clip loss')
+    parser.add_argument('--patch_iter', default=50, type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
                         help='EMA momentum schedule (default: 0.996 1.0)')
     parser.add_argument('--ipe_scale', type=float, default=1.0, metavar='M',
