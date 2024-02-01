@@ -296,7 +296,46 @@ class TubeMaskingGenerator:
         np.random.shuffle(mask_per_frame)
         mask = np.tile(mask_per_frame, (self.frames, 1)).flatten()
         return mask
+class TubeMaskingGeneratorCross:
+    def __init__(self, batch, input_size, mask_ratio, kept_mask_ratio, device=0):
+        self.batch = batch
+        self.frames, self.height, self.width = input_size
+        self.num_patches_per_frame =  self.height * self.width
+        self.total_patches = self.frames * self.num_patches_per_frame
+        self.num_masks_per_frame = int(mask_ratio * self.num_patches_per_frame)
+        self.total_masks = self.frames * self.num_masks_per_frame
+        self.mask_ratio = mask_ratio
+        self.kept_mask_ratio = kept_mask_ratio
 
+        self.device = device
+
+    def __repr__(self):
+        repr_str = "Maks: total patches {}, mask patches {}".format(
+            self.total_patches, self.total_masks
+        )
+        return repr_str
+
+    def __call__(self):
+        N, L = self.batch, self.total_patches # batch, length
+        len_keep = int(L * (1 - self.mask_ratio))
+        len_masked = int(L * (self.mask_ratio - self.kept_mask_ratio))
+        
+        noise = torch.rand(N, L, device=self.device)  # noise in [0, 1]
+        
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device=self.device)
+        mask[:, :(len_keep + len_masked)] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return mask.bool(), ids_restore.to(self.device), ids_keep.to(self.device)
 
 class TubeMaskingGeneratorGPU:
     def __init__(self, batch, input_size, mask_ratio, device=0):

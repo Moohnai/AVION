@@ -61,7 +61,7 @@ The fold should look like this:
 
 3. Download annotations
 
-    ```bash
+    ```bash 
     # Assume that you are under `datasets/EK100/`
     git clone https://github.com/epic-kitchens/epic-kitchens-100-annotations
     ```

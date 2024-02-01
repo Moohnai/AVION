@@ -32,7 +32,7 @@ sys.path.append(parent_path)
 from avion.data.clip_dataset import get_pretrain_dataset_FRIL
 from avion.data.kinetics_dataset import KineticsDataset
 from torchvision.transforms import v2
-from avion.data.transforms import GroupMultiScaleCrop, Permute, TubeMaskingGeneratorGPU, Permute_BB
+from avion.data.transforms import GroupMultiScaleCrop, Permute, TubeMaskingGeneratorGPU, Permute_BB, TubeMaskingGeneratorCross
 import avion.models.model_FRIL as model_FRIL
 from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler, cyclic_decay_cosine_scheduler
@@ -67,7 +67,7 @@ def get_args_parser():
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
     # model
-    parser.add_argument('--model', default='FRILS_VITB16', type=str)
+    parser.add_argument('--model', default='FRILSCross_VITB32', type=str) # FRILS_VITB16  FRILSCross_VITB32
     parser.add_argument('--channel-last', action='store_true', dest='channel_last')
     parser.add_argument('--disable-channel-last', action='store_false', dest='channel_last')
     parser.set_defaults(channel_last=False)
@@ -87,7 +87,7 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pretrain_FRIL_all_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='pretrain_CrossFRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -113,11 +113,11 @@ def get_args_parser():
                         default='/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json', 
                         type=str, help='path to motion box json file')
     parser.add_argument('--embedded_text_path', 
-                        default="/home/mona/FRIL/avion/datasets/EK100/epic_embedded_mix_captions_train_dict.pt", 
+                        default="/home/mona/FRIL/avion/datasets/EK100/epic_train_video_caption_text_dict.pt", 
                         help='path to embedded text')
-    parser.add_argument('--MSE_scale', default=1, type=float, help='the weight of MSE loss')
+    parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
     parser.add_argument('--CLIP_scale', default=0, type=float, help='the weight of clip loss')
-    parser.add_argument('--FR_scale', default=0, type=float, help='the weight of feature reconstruction loss')
+    parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
     parser.add_argument('--CLIP-strategy', default='patch', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
     parser.add_argument('--patch_iter', default=50, type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
@@ -127,7 +127,7 @@ def get_args_parser():
     # system
     parser.add_argument('--print-freq', default=20, type=int, help='print frequency')
     parser.add_argument('--verbose', action='store_true')
-    parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
+    parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',#8
                         help='number of data loading workers per process')
     parser.add_argument('--evaluate', action='store_true', help='eval only')
     parser.add_argument('--world-size', default=1, type=int,
@@ -489,7 +489,11 @@ def train(
         videos = inputs.cuda(args.gpu, non_blocking=True)
         if args.fused_decode_crop:
             videos = videos.permute(0, 4, 1, 2, 3)
-        bool_masked_pos = TubeMaskingGeneratorGPU(videos.shape[0], args.window_size, args.mask_ratio, device=args.gpu)().flatten(1).to(torch.bool)
+
+        if args.model == 'FRILSCross_VITB32':
+            bool_masked_pos, ids_restore, ids_keep = TubeMaskingGeneratorCross(videos.shape[0], args.window_size, args.mask_ratio, 0.1, device=args.gpu)()
+        else:
+            bool_masked_pos = TubeMaskingGeneratorGPU(videos.shape[0], args.window_size, args.mask_ratio, device=args.gpu)().flatten(1).to(torch.bool)
 
 
         if args.normalize_target:
@@ -510,11 +514,21 @@ def train(
         tic = time.time()
         # compute output
         with amp.autocast(enabled=not args.disable_amp):
-            outputs, embedded_patches, mapped_embedded_patches, pred_features, _, mapped_masked_pred_features, logit_scale = model(videos, bool_masked_pos)
+            
+            if args.model == 'FRILSCross_VITB32':
+                outputs, embedded_patches, mapped_embedded_patches, pred_features, \
+                _, mapped_masked_pred_features, logit_scale = model(videos, bool_masked_pos, ids_restore, ids_keep)
 
-            with torch.no_grad():
-                _, _, _, _, mapped_masked_embedded_patches, _, _ = teacher_model(videos, bool_masked_pos)
-                mapped_masked_embedded_patches = F.layer_norm(mapped_masked_embedded_patches, (mapped_masked_embedded_patches.size(-1),))  # normalize over feature-dim
+                with torch.no_grad():
+                    _, _, _, _, mapped_masked_embedded_patches, _, _ = teacher_model(videos, bool_masked_pos, ids_restore, ids_keep)
+                    mapped_masked_embedded_patches = F.layer_norm(mapped_masked_embedded_patches, (mapped_masked_embedded_patches.size(-1),))
+            else:
+                outputs, embedded_patches, mapped_embedded_patches, pred_features, \
+                _, mapped_masked_pred_features, logit_scale = model(videos, bool_masked_pos)
+
+                with torch.no_grad():
+                    _, _, _, _, mapped_masked_embedded_patches, _, _ = teacher_model(videos, bool_masked_pos)
+                    mapped_masked_embedded_patches = F.layer_norm(mapped_masked_embedded_patches, (mapped_masked_embedded_patches.size(-1),))  # normalize over feature-dim
 
 
 
