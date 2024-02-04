@@ -67,7 +67,7 @@ def get_args_parser():
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
     # model
-    parser.add_argument('--model', default='FRILSCross_VITB32', type=str) # FRILS_VITB16  FRILSCross_VITB32
+    parser.add_argument('--model', default='FRILS_VITB16', type=str) # FRILS_VITB16  FRILSCross_VITB32
     parser.add_argument('--channel-last', action='store_true', dest='channel_last')
     parser.add_argument('--disable-channel-last', action='store_false', dest='channel_last')
     parser.set_defaults(channel_last=False)
@@ -87,14 +87,14 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pretrain_CrossFRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='pretrain_depth_12_dec_FRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
     parser.add_argument('--epochs', default=800, type=int)
     parser.add_argument('--warmup-epochs', default=20, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=60, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=50, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
     parser.add_argument('--lr', default=1.5e-4, type=float) # 1.5e-4 #best for epic:1.2e-4
     parser.add_argument('--fix-lr', action='store_true', help='disable cosine lr decay if set True')
@@ -491,7 +491,7 @@ def train(
             videos = videos.permute(0, 4, 1, 2, 3)
 
         if args.model == 'FRILSCross_VITB32':
-            bool_masked_pos, ids_restore, ids_keep = TubeMaskingGeneratorCross(videos.shape[0], args.window_size, args.mask_ratio, 0.1, device=args.gpu)()
+            bool_masked_pos, ids_restore, ids_keep = TubeMaskingGeneratorCross(videos.shape[0], args.window_size, args.mask_ratio, 1.0, device=args.gpu)()
         else:
             bool_masked_pos = TubeMaskingGeneratorGPU(videos.shape[0], args.window_size, args.mask_ratio, device=args.gpu)().flatten(1).to(torch.bool)
 

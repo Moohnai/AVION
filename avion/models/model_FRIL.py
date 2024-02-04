@@ -1418,8 +1418,8 @@ def FRILS_VITB16(pretrained=False, **kwargs):
         encoder_num_heads=12,
         encoder_num_classes=0,
         decoder_num_classes=1536,
-        decoder_embed_dim=384,
-        decoder_num_heads=6,
+        decoder_embed_dim=384, # 384
+        decoder_num_heads=6, # 6
         mlp_ratio=4, 
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), 

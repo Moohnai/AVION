@@ -107,7 +107,7 @@ def get_args_parser():
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     # fine-tune
-    parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain/pretrain_FRIL_sub_epic_Kitchens_with_caption__MSE_scale=0__CLIP_scale=1__FR_scale=1__ssvli_iter=50_800_epochs_totalbatch=240_lr=0.00015_CLIP_strategy=patch/checkpoint_00800.pt', help='fine-tune path')
+    parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain/pretrain_depth_12_dec_FRIL_sub_epic_Kitchens_with_caption__MSE_scale=0__CLIP_scale=0__FR_scale=1__ssvli_iter=50_800_epochs_totalbatch=200_lr=0.00015/checkpoint_00800.pt', help='fine-tune path')
     # parser.add_argument('--finetune', default='', help='fine-tune path')
     parser.add_argument('--model-key', default='model|module|state_dict', type=str)
     # model ema
@@ -116,7 +116,7 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='FR_CLIP_iter_50_new_finetune_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='FR_depth_12_dec_new_finetune_CrossFRIL_sub_epic_Kitchens_with_caption', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -356,7 +356,13 @@ def main(args):
             checkpoint = torch.load(args.resume, map_location='cpu')
             epoch = checkpoint['epoch'] if 'epoch' in checkpoint else 0
             args.start_epoch = epoch
-            result = model.load_state_dict(checkpoint['state_dict'], strict=False)
+            # remove prefix 'module.' for the keys of the state_dict
+            new_state_dict = OrderedDict()
+            for k, v in checkpoint['state_dict'].items():
+                if k.startswith('module.'):
+                    k = k.replace('module.', '')
+                new_state_dict[k] = v
+            result = model.load_state_dict(new_state_dict, strict=True)
             print(result)
             optimizer.load_state_dict(checkpoint['optimizer']) if 'optimizer' in checkpoint else ()
             scaler.load_state_dict(checkpoint['scaler']) if 'scaler' in checkpoint else ()
@@ -537,7 +543,8 @@ def main(args):
     # clear cuda cache
     torch.cuda.empty_cache()
     
-    test_stats = test(test_loader, model, args, len(test_dataset))
+    test_stats = test(val_loader, model, args, len(val_loader)*val_loader.batch_size)
+    # test_stats = validate(test_loader, model, epoch, args)
     
     # wandb log
     wandb_dict = {}
@@ -752,8 +759,8 @@ def test(test_loader, model, args, num_videos):
             tic = time.time()
             # compute output
             with amp.autocast(enabled=not args.disable_amp):
-                targets_repeated = torch.repeat_interleave(targets, videos.shape[1])
-                videos = rearrange(videos, 'b n t c h w -> (b n) t c h w')
+                targets_repeated = targets#torch.repeat_interleave(targets, videos.shape[1])
+                # videos = rearrange(videos, 'b n t c h w -> (b n) t c h w')
                 logits = model(videos)
                 loss = criterion(logits, targets_repeated)
 
@@ -811,22 +818,9 @@ def test(test_loader, model, args, num_videos):
     all_logits = all_logits[:num_videos, :].mean(axis=1)
     all_probs = all_probs[:num_videos, :].mean(axis=1)
     all_targets = all_targets[:num_videos, ]
-    # for Epic-Kitchens that does not have all classes in test set
-    if args.dataset == 'ek100_cls':
-        unique_targets = np.unique(all_targets)
-        # filter out classes that are not in unique_targets in all_logits and all_probs
-        all_logits = all_logits[:, unique_targets]
-        all_probs = all_probs[:, unique_targets]
-    
+
     for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
         if s == 'logits': all_preds = scipy.special.softmax(all_preds, axis=1)
-        acc1 = top_k_accuracy_score(all_targets, all_preds, k=1, labels=np.arange(0, args.num_classes))
-        acc5 = top_k_accuracy_score(all_targets, all_preds, k=5, labels=np.arange(0, args.num_classes))
-        dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
-        print('[Average {s}] {dataset} * Acc@1 {top1:.3f} Acc@5 {top5:.3f}'.format(s=s, dataset=dataset, top1=acc1, top5=acc5))
-        cm = confusion_matrix(all_targets, all_preds.argmax(axis=1))
-        mean_acc, acc = get_mean_accuracy(cm)
-        print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
 
         if args.dataset == 'ek100_cls':
             vi = get_marginal_indexes(args.actions, 'verb')
@@ -843,6 +837,34 @@ def test(test_loader, model, args, num_videos):
             _, acc = get_mean_accuracy(cm)
             print('Noun Acc@1: {:.3f}'.format(acc))
             metrics['Noun Acc@1'] = acc
+
+
+    # for Epic-Kitchens that does not have all classes in test set
+    if args.dataset == 'ek100_cls':
+        unique_targets = np.unique(all_targets)
+        # filter out classes that are not in unique_targets in all_logits and all_probs
+        all_logits = all_logits[:, unique_targets]
+        all_probs = all_probs[:, unique_targets]
+        # create a mapping and reset all_targets from 0 to len(unique_targets)
+        mapping = {k: v for v, k in enumerate(unique_targets)}
+        # print mapping
+        print("Mapping: ", mapping)
+        all_targets = np.array([mapping[t] for t in all_targets])
+        num_classes = len(unique_targets)
+    else:
+        num_classes = args.nb_classes
+
+    
+    for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
+        if s == 'logits': all_preds = scipy.special.softmax(all_preds, axis=1)
+            
+        acc1 = top_k_accuracy_score(all_targets, all_preds, k=1, labels=np.arange(0, num_classes))
+        acc5 = top_k_accuracy_score(all_targets, all_preds, k=5, labels=np.arange(0, num_classes))
+        dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
+        print('[Average {s}] {dataset} * Acc@1 {top1:.3f} Acc@5 {top5:.3f}'.format(s=s, dataset=dataset, top1=acc1, top5=acc5))
+        cm = confusion_matrix(all_targets, all_preds.argmax(axis=1))
+        mean_acc, acc = get_mean_accuracy(cm)
+        print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
 
     return {k: v.avg for k, v in metrics.items()}
 
