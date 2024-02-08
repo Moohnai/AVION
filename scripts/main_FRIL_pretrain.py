@@ -52,7 +52,7 @@ def get_args_parser():
                         default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),)
     parser.add_argument('--val-metadata', type=str,
                         default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),)
-    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/pretrain/'), type=str, help='output dir')
+    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/pretrain_FRILS/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
@@ -71,7 +71,7 @@ def get_args_parser():
     parser.add_argument('--channel-last', action='store_true', dest='channel_last')
     parser.add_argument('--disable-channel-last', action='store_false', dest='channel_last')
     parser.set_defaults(channel_last=False)
-    parser.add_argument('--decoder-depth', default=4, type=int, help='decoder depth')
+    parser.add_argument('--decoder-depth', default=12, type=int, help='decoder depth')#4
     parser.add_argument('--grad-checkpointing', action='store_true', dest='use_grad_checkpointing')
     parser.add_argument('--no-grad-checkpointing', action='store_false', dest='use_grad_checkpointing')
     parser.set_defaults(use_grad_checkpointing=True)
@@ -87,7 +87,7 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pretrain_depth_12_dec_FRIL_sub_epic_Kitchens_with_caption', type=str)
+    parser.add_argument('--run_name', default='pretrain_FR_CLIP_vidcaption_vifi_all_EK', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -113,13 +113,13 @@ def get_args_parser():
                         default='/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json', 
                         type=str, help='path to motion box json file')
     parser.add_argument('--embedded_text_path', 
-                        default="/home/mona/FRIL/avion/datasets/EK100/epic_train_video_caption_text_dict.pt", 
+                        default="/home/mona/FRIL/avion/datasets/EK100/vifi_epic_train_video_caption_text_dict.pt", 
                         help='path to embedded text')
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
-    parser.add_argument('--CLIP_scale', default=0, type=float, help='the weight of clip loss')
+    parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
     parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
-    parser.add_argument('--CLIP-strategy', default='patch', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
-    parser.add_argument('--patch_iter', default=50, type=int, help='the number of iterations for patch-wise clip loss')
+    parser.add_argument('--CLIP-strategy', default='patch-average', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
+    parser.add_argument('--patch_iter', default='10', type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
                         help='EMA momentum schedule (default: 0.996 1.0)')
     parser.add_argument('--ipe_scale', type=float, default=1.0, metavar='M',
@@ -162,16 +162,19 @@ def main(args):
     teacher_model = copy.deepcopy(model)
 
     # add scale values to the run name
-    args.run_name = args.run_name + "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
+    args.run_name = args.run_name +"_decoder_head="+ str(args.decoder_depth)+ "__MSE_scale=" + str(args.MSE_scale) + "__CLIP_scale=" \
         + str(args.CLIP_scale) + "__FR_scale=" + str(args.FR_scale) + "__ssvli_iter=" + str(args.patch_iter) \
             + "_" + str(args.epochs) + "_epochs_totalbatch=" + str(args.batch_size * dist_utils.get_world_size()) \
                 + "_lr=" + str(args.lr) 
     if args.CLIP_scale > 0:
         args.run_name = args.run_name + "_CLIP_strategy=" + args.CLIP_strategy
 
+    if args.CLIP_strategy == 'patch-average':
+        args.patch_iter = 1
+
     # initialize wandb
     wandb.init(
-        project="ssvli_epic",
+        project="FRILS_EK100",
         group="pretrained",
         name=args.run_name,
         config=args,
@@ -473,7 +476,7 @@ def train(
         inputs, label, motion_patch_yab, text_embed = batch
 
         # cast text_embed to cuda
-        text_embed = text_embed.cuda(args.gpu, non_blocking=True).squeeze(1)
+        text_embed = text_embed.cuda(args.gpu, non_blocking=True)#.squeeze(1)
 
         # measure data loading time
         if args.verbose:

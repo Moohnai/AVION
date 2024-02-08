@@ -689,6 +689,8 @@ class FRILS_CrossPretrainVisionTransformerEncoder(nn.Module):
 
         ####################################
         x = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, embedded_patch.shape[-1]))
+        # x = torch.gather(x, dim=1, index=ids_keep.to(x.device).unsqueeze(-1).repeat(1, 1, embedded_patch.shape[-1]))
+
 
         # apply Transformer blocks
         x_feats = []
@@ -1127,8 +1129,8 @@ class FRILS_PretrainVisionTransformer(nn.Module):
                  channel_last=False,
                  num_classes=0, # avoid the error from create_fn in timm
                  in_chans=0, # avoid the error from create_fn in timm
-                 text_embed_dim=768,
-                 ):
+                 text_embed_dim=512,#768 #512(vifi) #1280(OpenCLIP)
+                  ):
         super().__init__()
         self.decoder_embed_dim = decoder_embed_dim
         self.encoder_embed_dim = encoder_embed_dim
@@ -1177,11 +1179,11 @@ class FRILS_PretrainVisionTransformer(nn.Module):
         
         self.v2t_mapping = Mlp(in_features=encoder_embed_dim, hidden_features=int(encoder_embed_dim * mlp_ratio), 
                             act_layer=nn.GELU, drop=0,
-                            out_features=int(encoder_embed_dim))
+                            out_features=int(text_embed_dim))
         
         self.t_mapping = Mlp(in_features=decoder_embed_dim, hidden_features=int(decoder_embed_dim * mlp_ratio), 
                             act_layer=nn.GELU, drop=0,
-                            out_features=int(text_embed_dim))
+                            out_features=int(encoder_embed_dim))
 
         self.encoder_to_decoder = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=False)
 
@@ -1229,7 +1231,7 @@ class FRILS_PretrainVisionTransformer(nn.Module):
         pred_feature = self.t_mapping(pred_feature)
 
         mapped_masked_embedded_patch = mapped_embedded_patch[mask].reshape(b, -1, self.text_embed_dim)
-        mapped_masked_pred_feature = self.v2t_mapping(pred_feature[mask].reshape(b, -1, self.text_embed_dim))
+        mapped_masked_pred_feature = self.v2t_mapping(pred_feature[mask].reshape(b, -1, self.encoder_embed_dim))
 
         return x, embedded_patch, mapped_embedded_patch, pred_feature, mapped_masked_embedded_patch, mapped_masked_pred_feature, self.logit_scale.exp()
 
@@ -1418,8 +1420,8 @@ def FRILS_VITB16(pretrained=False, **kwargs):
         encoder_num_heads=12,
         encoder_num_classes=0,
         decoder_num_classes=1536,
-        decoder_embed_dim=384, # 384
-        decoder_num_heads=6, # 6
+        decoder_embed_dim=768, # 384
+        decoder_num_heads=12, # 6
         mlp_ratio=4, 
         qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), 

@@ -503,7 +503,8 @@ class VideoClassyDataset_FRIL(VideoCaptionDatasetBase):
 
 
 
-        return frames, label, motion_patch_yab.transpose(1, 0).flatten(), self.text_embeddings[f'{vid_index}']
+        return frames, label, motion_patch_yab.transpose(1, 0).flatten(), self.text_embeddings[f'{vid_index}'] #[0]
+    
 
 
 def get_downstream_dataset(transform, crop_size, args, subset='train', label_mapping=None):
@@ -541,7 +542,7 @@ def get_pretrain_dataset_FRIL(transform, crop_size, args, subset='train', label_
         # load text embeddings
         text_embeddings = torch.load(args.embedded_text_path)
         for k,v in text_embeddings.items():
-            text_embeddings[k] = v[0].cpu().numpy()
+            text_embeddings[k] = v.cpu().numpy() #v[0].cpu().numpy()
         return VideoClassyDataset_FRIL(
             args.dataset, args.root, args.train_metadata, transform,
             is_training=True, label_mapping=label_mapping,

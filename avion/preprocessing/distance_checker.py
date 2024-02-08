@@ -18,21 +18,23 @@ def dot_product(x,y):
     y = y.reshape(-1)
     return torch.dot(x,y)
 
-
 # train_lable_embed_path_epic = '../../home/mona/SSVLI/dataset/epic_kitchens/epic_train_label_text_dict.pt'
 
-train_org_label_embed_path_epic = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_org_label_dict.pt'
-epic_train_image_caption_path = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_image_caption_text_dict.pt'
-epic_train_video_caption_path = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_video_caption_text_dict.pt'
-epic_train_mixed_caption_path = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_mixed_caption_text_dict.pt'
+train_org_label_embed_path_epic = '/home/mona/FRIL/avion/datasets/EK100/epic_train_label_text_dict.pt'
+# epic_train_image_caption_path = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_image_caption_text_dict.pt'
+# epic_train_video_caption_path = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_video_caption_text_dict.pt'
+# epic_train_mixed_caption_path = '../../home/mona/FRIL/avion/datasets/EK100/epic_train_mixed_caption_text_dict.pt'
+epic_train_image_caption_path = '/home/mona/FRIL/avion/datasets/EK100/vifi_epic_train_image_caption_text_dict.pt'
+epic_train_video_caption_path = '/home/mona/FRIL/avion/datasets/EK100/vifi_epic_train_video_caption_text_dict.pt'
+epic_train_mixed_caption_path = '/home/mona/FRIL/avion/datasets/EK100/vifi_epic_train_mixed_caption_text_dict.pt'
 
 
 epic_train_lable_embed = torch.load(train_org_label_embed_path_epic)
 epic_train_image_caption_embed = torch.load(epic_train_image_caption_path)
 epic_train_video_caption_embed = torch.load(epic_train_video_caption_path)
 epic_train_mixed_caption_embed = torch.load(epic_train_mixed_caption_path)
-epic_csv_action_path_train = "../../home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv"
-generated_csv_path = "../../home/mona/FRIL/avion/datasets/EK100/epic_captions_train.csv"
+epic_csv_action_path_train = "/home/mona/FRIL/avion/datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv"
+generated_csv_path = "/home/mona/FRIL/avion/datasets/EK100/epic_captions_train.csv"
 epic_label = pd.read_csv(epic_csv_action_path_train)
 # add another avtion column to epic_label
 epic_label['action'] = epic_label['verb'] + ' ' + epic_label['noun']
@@ -59,9 +61,9 @@ for i in range(len(epic_train_lable_embed)):
     mixed_caption = row['mixed_caption'].values[0]
     mixed_caption_dict[video] = mixed_caption
 
-    image_cosine_distance_dict[video] = cosine_distance(epic_train_lable_embed[i][0], epic_train_image_caption_embed[str(i)][0]).item()
-    video_cosine_distance_dict[video] = cosine_distance(epic_train_lable_embed[i][0], epic_train_video_caption_embed[str(i)][0]).item()
-    mixed_cosine_distance_dict[video] = cosine_distance(epic_train_lable_embed[i][0], epic_train_mixed_caption_embed[str(i)][0]).item()
+    image_cosine_distance_dict[video] = cosine_distance(epic_train_lable_embed[str(i)][0], epic_train_image_caption_embed[str(i)]r).item()
+    video_cosine_distance_dict[video] = cosine_distance(epic_train_lable_embed[str(i)][0], epic_train_video_caption_embed[str(i)]).item()
+    mixed_cosine_distance_dict[video] = cosine_distance(epic_train_lable_embed[str(i)][0], epic_train_mixed_caption_embed[str(i)]).item()
     
     print(video, " Label: ",label, " image_caption:",image_caption, " Cosine distance image_caption & label: ",image_cosine_distance_dict[video],
             " video_caption ",video_caption, " Cosine distance image_caption & label: ",video_cosine_distance_dict[video],
@@ -87,21 +89,21 @@ plt.hist(image_cosine_distance_dict.values(), bins=100)
 plt.title('Cosine distance')
 plt.xlabel('Distance')
 plt.ylabel('Frequency')
-plt.savefig('epic_cosine_distance_bw_image_captions_and_labels.png')
+plt.savefig('vifi_epic_cosine_distance_bw_image_captions_and_labels.png')
 
 plt.figure()
 plt.hist(video_cosine_distance_dict.values(), bins=100)
 plt.title('Cosine distance')
 plt.xlabel('Distance')
 plt.ylabel('Frequency')
-plt.savefig('epic_cosine_distance_bw_video_captions_and_labels.png')
+plt.savefig('vifi_epic_cosine_distance_bw_video_captions_and_labels.png')
 
 plt.figure()
 plt.hist(mixed_cosine_distance_dict.values(), bins=100)
 plt.title('Cosine distance')
 plt.xlabel('Distance')
 plt.ylabel('Frequency')
-plt.savefig('epic_cosine_distance_bw_mixed_captions_and_labels.png')
+plt.savefig('vifi_epic_cosine_distance_bw_mixed_captions_and_labels.png')
 
 
 
