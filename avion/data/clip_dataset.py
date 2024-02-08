@@ -154,41 +154,41 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                     self.samples.append((vid_path, start_timestamp, end_timestamp, fps, narration, verb, noun, idx))
 
             
-            ###########################################################################################################
-            a=[label_mapping['{}:{}'.format(x[-3], x[-2])] for x in self.samples]
-            a_unique = list(set(a))
-            a_unique.sort()
-            counter = {x:0 for x in a_unique}
-            for x in a:
-                counter[x] += 1
-            # sort the dictionary based on the values
-            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-            #save in a text file
-            with open('/home/mona/whole.txt', 'w') as f:
-                for key, value in counter.items():
-                    f.write('%s:%s\n' % (key, value))
+            # ###########################################################################################################
+            # a=[label_mapping['{}:{}'.format(x[-3], x[-2])] for x in self.samples]
+            # a_unique = list(set(a))
+            # a_unique.sort()
+            # counter = {x:0 for x in a_unique}
+            # for x in a:
+            #     counter[x] += 1
+            # # sort the dictionary based on the values
+            # counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+            # #save in a text file
+            # with open('/home/mona/whole.txt', 'w') as f:
+            #     for key, value in counter.items():
+            #         f.write('%s:%s\n' % (key, value))
 
-            ############### classes that have more than 90 and less than 110 videos
+            # ############### classes that have more than 90 and less than 110 videos
 
-            b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
-            selected_samples = [x for x in self.samples if label_mapping['{}:{}'.format(x[-3], x[-2])] in b_unique]
+            # b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
+            # selected_samples = [x for x in self.samples if label_mapping['{}:{}'.format(x[-3], x[-2])] in b_unique]
         
 
-            b=[label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
-            b_unique = list(set(b)) 
-            b_unique.sort()
-            counter = {label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
-            for x in b:
-                counter[x] += 1
-            # sort the dictionary based on the values
-            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-            #save in a text file
-            with open('/home/mona/sub_epic_middle.txt', 'w') as f:
-                for key, value in counter.items():
-                    f.write('%s:%s\n' % (key, value))
+            # b=[label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
+            # b_unique = list(set(b)) 
+            # b_unique.sort()
+            # counter = {label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
+            # for x in b:
+            #     counter[x] += 1
+            # # sort the dictionary based on the values
+            # counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+            # #save in a text file
+            # with open('/home/mona/sub_epic_middle.txt', 'w') as f:
+            #     for key, value in counter.items():
+            #         f.write('%s:%s\n' % (key, value))
 
-            self.samples = selected_samples
-            ###########################################################################################################
+            # self.samples = selected_samples
+            # ###########################################################################################################
 
 
             if self.dataset == 'ek100_mir':
