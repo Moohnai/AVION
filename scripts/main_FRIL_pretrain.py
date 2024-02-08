@@ -71,7 +71,7 @@ def get_args_parser():
     parser.add_argument('--channel-last', action='store_true', dest='channel_last')
     parser.add_argument('--disable-channel-last', action='store_false', dest='channel_last')
     parser.set_defaults(channel_last=False)
-    parser.add_argument('--decoder-depth', default=12, type=int, help='decoder depth')#4
+    parser.add_argument('--decoder-depth', default=6, type=int, help='decoder depth')#4
     parser.add_argument('--grad-checkpointing', action='store_true', dest='use_grad_checkpointing')
     parser.add_argument('--no-grad-checkpointing', action='store_false', dest='use_grad_checkpointing')
     parser.set_defaults(use_grad_checkpointing=True)
@@ -119,7 +119,7 @@ def get_args_parser():
     parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
     parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
     parser.add_argument('--CLIP-strategy', default='patch-average', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
-    parser.add_argument('--patch_iter', default='10', type=int, help='the number of iterations for patch-wise clip loss')
+    parser.add_argument('--patch_iter', default='1', type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
                         help='EMA momentum schedule (default: 0.996 1.0)')
     parser.add_argument('--ipe_scale', type=float, default=1.0, metavar='M',
