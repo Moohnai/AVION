@@ -67,7 +67,7 @@ def get_args_parser():
     parser.add_argument('--use-pin-memory', action='store_true', dest='use_pin_memory')
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
-    parser.add_argument('--nb-classes', default=35, type=int, help='number of classes, EK100: 3806, SSV2: 174')
+    parser.add_argument('--nb-classes', default=3806, type=int, help='number of classes, EK100: 3806, SSV2: 174')
     # augmentation
     parser.add_argument('--repeated-aug', default=1, type=int)
     parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
@@ -107,7 +107,7 @@ def get_args_parser():
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     # fine-tune
-    parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain/pretrain_FR_CLIP_depth_6_dec_sub_epic_Kitchens_with_Open_CLIP_vidcaption__MSE_scale=0__CLIP_scale=1__FR_scale=1__ssvli_iter=10_800_epochs_totalbatch=232_lr=0.00015_CLIP_strategy=patch-average/checkpoint_00800.pt', help='fine-tune path')
+    parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain_FRILS/pretrain_MSE_all_EK_decoder_head=6__MSE_scale=1__CLIP_scale=0__FR_scale=0__ssvli_iter=10_800_epochs_totalbatch=240_lr=0.00015/checkpoint_00800.pt', help='fine-tune path')
     # parser.add_argument('--finetune', default='', help='fine-tune path')
     parser.add_argument('--model-key', default='model|module|state_dict', type=str)
     # model ema
@@ -116,14 +116,14 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='FR_CLIP_depth_6_dec_finetune_FRIL_sub_epic_Kitchens_with_OpenCLIP_caption', type=str)
+    parser.add_argument('--run_name', default='Finetune_MSE_FRILS_800__decoder_head=6_all_EK', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
-    parser.add_argument('--epochs', default=50, type=int)
+    parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--warmup-epochs', default=5, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=16, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=64, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
     parser.add_argument('--lr', default=1.5e-3, type=float)
     parser.add_argument('--layer-decay', type=float, default=0.75)
@@ -187,7 +187,7 @@ def main(args):
 
     # initialize wandb
     wandb.init(
-        project="ssvli_epic",
+        project="FRILS_EK100",
         group="finetune",
         name=args.run_name,
         config=args,
@@ -874,3 +874,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     main(args)
+    wandb.finish()
