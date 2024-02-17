@@ -39,73 +39,73 @@ def read_metadata(metadata_fname, root=None, args=None, mode='train'):
                 samples.append((vid_path, start_timestamp, end_timestamp, fps, narration, verb, noun, idx))
 
         
-        ###########################################################################################################
-        if mode == 'train':
-            a=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in samples]
-            a_unique = list(set(a))
-            a_unique.sort()
-            counter = {x:0 for x in a_unique}
-            for x in a:
-                counter[x] += 1
-            # sort the dictionary based on the values
-            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-            #save in a text file
-            with open(os.path.join(os.path.dirname(root), 'whole.txt'), 'w') as f:
-                for key, value in counter.items():
-                    f.write('%s:%s\n' % (key, value))
+        # ###########################################################################################################
+        # if mode == 'train':
+        #     a=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in samples]
+        #     a_unique = list(set(a))
+        #     a_unique.sort()
+        #     counter = {x:0 for x in a_unique}
+        #     for x in a:
+        #         counter[x] += 1
+        #     # sort the dictionary based on the values
+        #     counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #     #save in a text file
+        #     with open(os.path.join(os.path.dirname(root), 'whole.txt'), 'w') as f:
+        #         for key, value in counter.items():
+        #             f.write('%s:%s\n' % (key, value))
 
-        ############### classes that have more than 90 and less than 110 videos
+        # ############### classes that have more than 90 and less than 110 videos
 
-            b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
-            selected_samples = [x for x in samples if args.label_mapping['{}:{}'.format(x[-3], x[-2])] in b_unique]
+        #     b_unique = [x for x in a_unique if counter[x] > 90 and counter[x] < 110] #3510data_35classes
+        #     selected_samples = [x for x in samples if args.label_mapping['{}:{}'.format(x[-3], x[-2])] in b_unique]
         
 
-            b=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
-            b_unique = list(set(b)) 
-            b_unique.sort()
-            counter = {args.label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
-            for x in b:
-                counter[x] += 1
-            # sort the dictionary based on the values
-            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-            #save in a text file
-            with open(os.path.join(os.path.dirname(root), 'sub_epic_middle_train.txt'), 'w') as f:
-                for key, value in counter.items():
-                    f.write('%s:%s\n' % (key, value))
+        #     b=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
+        #     b_unique = list(set(b)) 
+        #     b_unique.sort()
+        #     counter = {args.label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
+        #     for x in b:
+        #         counter[x] += 1
+        #     # sort the dictionary based on the values
+        #     counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #     #save in a text file
+        #     with open(os.path.join(os.path.dirname(root), 'sub_epic_middle_train.txt'), 'w') as f:
+        #         for key, value in counter.items():
+        #             f.write('%s:%s\n' % (key, value))
 
-            samples = selected_samples#[:80]
+        #     samples = selected_samples#[:80]
             
-            # store the unique classes args
-            args.sub_unique_classes = b_unique
-        ###########################################################################################################
-        else:
-            selected_samples = [x for x in samples if args.label_mapping['{}:{}'.format(x[-3], x[-2])] in args.sub_unique_classes]
+        #     # store the unique classes args
+        #     args.sub_unique_classes = b_unique
+        # ###########################################################################################################
+        # else:
+        #     selected_samples = [x for x in samples if args.label_mapping['{}:{}'.format(x[-3], x[-2])] in args.sub_unique_classes]
             
-            b=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
-            b_unique = list(set(b)) 
-            b_unique.sort()
-            counter = {args.label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
-            for x in b:
-                counter[x] += 1
-            # sort the dictionary based on the values
-            counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
-            #save in a text file
-            with open(os.path.join(os.path.dirname(root), 'sub_epic_middle_val.txt'), 'w') as f:
-                for key, value in counter.items():
-                    f.write('%s:%s\n' % (key, value))
+        #     b=[args.label_mapping['{}:{}'.format(x[-3], x[-2])] for x in selected_samples]
+        #     b_unique = list(set(b)) 
+        #     b_unique.sort()
+        #     counter = {args.label_mapping['{}:{}'.format(x[-3], x[-2])]:0 for x in selected_samples}
+        #     for x in b:
+        #         counter[x] += 1
+        #     # sort the dictionary based on the values
+        #     counter = {k: v for k, v in sorted(counter.items(), key=lambda item: item[1])}
+        #     #save in a text file
+        #     with open(os.path.join(os.path.dirname(root), 'sub_epic_middle_val.txt'), 'w') as f:
+        #         for key, value in counter.items():
+        #             f.write('%s:%s\n' % (key, value))
             
-            samples = selected_samples#[:80]
+        #     samples = selected_samples#[:80]
 
-        if mode == 'test':
-            # update label_mapping based on the selected classes
-            args.label_mapping = {k: v for k, v in args.label_mapping.items() if v in args.sub_unique_classes}
-            # reset values of the label_mapping to be in the range of 0 to len(args.label_mapping)
-            args.label_mapping = {k: i for i, (k, v) in enumerate(args.label_mapping.items())}
-            # update the mapping_act2v, mapping_act2n, and actions
-            args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in args.label_mapping.items()}
-            args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in args.label_mapping.items()}
-            args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
-        ###########################################################################################################
+        # if mode == 'test':
+        #     # update label_mapping based on the selected classes
+        #     args.label_mapping = {k: v for k, v in args.label_mapping.items() if v in args.sub_unique_classes}
+        #     # reset values of the label_mapping to be in the range of 0 to len(args.label_mapping)
+        #     args.label_mapping = {k: i for i, (k, v) in enumerate(args.label_mapping.items())}
+        #     # update the mapping_act2v, mapping_act2n, and actions
+        #     args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in args.label_mapping.items()}
+        #     args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in args.label_mapping.items()}
+        #     args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
+        # ###########################################################################################################
 
     else:
         with open(metadata_fname) as split_f:
