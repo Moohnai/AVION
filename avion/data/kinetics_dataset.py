@@ -278,6 +278,7 @@ class KineticsDataset_FRIL(torch.utils.data.Dataset):
             print("[{}] __getitem__() starts at {}".format(os.getpid(), datetime.datetime.now()))
 
         video_id, data_caption, label, vid_index = self.samples[i]
+        video_id = video_id.split('.')[0]
 
         
         if self.is_training:
@@ -297,13 +298,17 @@ class KineticsDataset_FRIL(torch.utils.data.Dataset):
             )
 
         # filter out the motion box based on frame ids
-        frames_motion_bbs = []
-        frame_ids = np.arange(len(self.motion_boxes[f'{vid_index}'])) ## check it
-        for idx, c in enumerate(frame_ids):
-            union_frame_bboxs = np.array([[x['box2d']["x1"], x['box2d']["y1"], x['box2d']["x2"], x['box2d']["y2"]] for x in self.motion_boxes[f'{vid_index}'][c]['labels']]).reshape(-1) # x1, y1, x2, y2
-            frames_motion_bbs.append(union_frame_bboxs)
+        try:
+            frames_motion_bbs = []
+            frame_ids = np.arange(len(self.motion_boxes[f'{video_id}'])) ## check it
+            for idx, c in enumerate(frame_ids):
+                union_frame_bboxs = np.array([[x['box2d']["x1"], x['box2d']["y1"], x['box2d']["x2"], x['box2d']["y2"]] for x in self.motion_boxes[f'{video_id}'][c]['labels']]).reshape(-1) # x1, y1, x2, y2
+                frames_motion_bbs.append(union_frame_bboxs)
 
-        frames_motion_bbs = np.array(frames_motion_bbs)  # x1, y1, x2, y2
+            frames_motion_bbs = np.array(frames_motion_bbs)  # x1, y1, x2, y2
+        except:
+            # if there is no motion box, then create a center bbox with 50% of the frame size
+            frames_motion_bbs = np.array([[frames.size()[-3]//4, frames.size()[-2]//4, frames.size()[-3]//4*3, frames.size()[-2]//4*3]]*len(frames))
 
         # create a union bbox of all the frames
         union_bbx = np.array([np.min(frames_motion_bbs[:, 0]), np.min(frames_motion_bbs[:, 1]), np.max(frames_motion_bbs[:, 2]), np.max(frames_motion_bbs[:, 3])])
@@ -339,7 +344,7 @@ class KineticsDataset_FRIL(torch.utils.data.Dataset):
             print("[{}] __getitem__() end at {}".format(os.getpid(), datetime.datetime.now()))
 
         if self.masked_position_generator is None:
-            return frames, label, motion_patch_yab.transpose(1, 0).flatten(), self.text_embeddings[f'{vid_index}'] #[0]
+            return frames, label, motion_patch_yab.transpose(1, 0).flatten(), self.text_embeddings[f'{video_id}'] #[0]
         else:
             return frames, self.masked_position_generator()
 

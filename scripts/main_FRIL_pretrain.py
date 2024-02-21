@@ -54,10 +54,10 @@ def get_args_parser():
                             ]
                         )
     parser.add_argument('--train-metadata', type=str,
-                        default=os.path.join(parent_path, 'datasets/ssv2/train.csv'),
+                        default=os.path.join(parent_path, 'datasets/SSV2/annotation/train.csv'),
                         choices=[
                             os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
-                            os.path.join(parent_path, 'datasets/ssv2/train.csv'),
+                            os.path.join(parent_path, 'datasets/SSV2/annotation/train.csv'),
                             ],
                         )
     parser.add_argument('--val-metadata', type=str,
@@ -102,14 +102,14 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pretrain_FR_CLIP_vidcaption_vifi_all_EK', type=str)
+    parser.add_argument('--run_name', default='pretrain_FR_CLIP_vidcaption_vifi_all_SSV2', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
     parser.add_argument('--epochs', default=800, type=int)
     parser.add_argument('--warmup-epochs', default=20, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
-    parser.add_argument('--batch-size', default=50, type=int, help='number of samples per-device/per-gpu')
+    parser.add_argument('--batch-size', default=60, type=int, help='number of samples per-device/per-gpu')
     parser.add_argument('--optimizer', default='adamw', choices=['adamw', 'lion'], type=str)
     parser.add_argument('--lr', default=1.5e-4, type=float) # 1.5e-4 #best for epic:1.2e-4
     parser.add_argument('--fix-lr', action='store_true', help='disable cosine lr decay if set True')
@@ -132,7 +132,7 @@ def get_args_parser():
                             '/mnt/welles/scratch/datasets/SSV2/Unsupervised_BB_SSV2_train.json',
                             ])
     parser.add_argument('--embedded_text_path', 
-                        default="/home/mona/FRIL/avion/datasets/EK100/vifi_epic_train_video_caption_text_dict.pt", 
+                        default="/home/mona/FRIL/avion/datasets/SSV2/vifi_full_SSV2_train_video_caption_text_dict.pt", 
                         help='path to embedded text')
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
     parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
@@ -192,12 +192,12 @@ def main(args):
         args.patch_iter = 1
 
     # initialize wandb
-    # wandb.init(
-    #     project="FRILS_SSV2",
-    #     group="pretrained",
-    #     name=args.run_name,
-    #     config=args,
-    #     )
+    wandb.init(
+        project="FRILS_SSV2",
+        group="pretrained",
+        name=args.run_name,
+        config=args,
+        )
     
     # append the run name to the output_dir
     args.output_dir = os.path.join(args.output_dir, args.run_name)
