@@ -44,14 +44,29 @@ from avion.utils.misc import check_loss_nan, generate_label_map, get_grad_norm_
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='FRIL pretrain', add_help=False)
-    parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_mir'])
+    parser.add_argument('--dataset', default='ssv2', type=str, choices=['ek100_cls', 'ssv2'])
     parser.add_argument('--root',
-                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
-                        type=str, help='path to train dataset root')
+                        default='/mnt/welles/scratch/datasets/SSV2/mp4_videos',
+                        type=str, help='path to train dataset root',
+                        choices=[
+                            os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
+                            '/mnt/welles/scratch/datasets/SSV2/mp4_videos',
+                            ]
+                        )
     parser.add_argument('--train-metadata', type=str,
-                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),)
+                        default=os.path.join(parent_path, 'datasets/ssv2/train.csv'),
+                        choices=[
+                            os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
+                            os.path.join(parent_path, 'datasets/ssv2/train.csv'),
+                            ],
+                        )
     parser.add_argument('--val-metadata', type=str,
-                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),)
+                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
+                        choices=[
+                            os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
+                            os.path.join(parent_path, 'datasets/ssv2/val.csv'),
+                            ],
+                        )
     parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/pretrain_FRILS/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
@@ -110,8 +125,12 @@ def get_args_parser():
     parser.add_argument('--grad-clip-norm', default=None, type=float)
     parser.add_argument('--use-multi-epochs-loader', action='store_true')
     parser.add_argument('--motion_box_path', 
-                        default='/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json', 
-                        type=str, help='path to motion box json file')
+                        default='/mnt/welles/scratch/datasets/SSV2/Unsupervised_BB_SSV2_train.json', 
+                        type=str, help='path to motion box json file',
+                        choices=[
+                            '/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json',
+                            '/mnt/welles/scratch/datasets/SSV2/Unsupervised_BB_SSV2_train.json',
+                            ])
     parser.add_argument('--embedded_text_path', 
                         default="/home/mona/FRIL/avion/datasets/EK100/vifi_epic_train_video_caption_text_dict.pt", 
                         help='path to embedded text')
@@ -173,12 +192,12 @@ def main(args):
         args.patch_iter = 1
 
     # initialize wandb
-    wandb.init(
-        project="FRILS_EK100",
-        group="pretrained",
-        name=args.run_name,
-        config=args,
-        )
+    # wandb.init(
+    #     project="FRILS_SSV2",
+    #     group="pretrained",
+    #     name=args.run_name,
+    #     config=args,
+    #     )
     
     # append the run name to the output_dir
     args.output_dir = os.path.join(args.output_dir, args.run_name)
@@ -320,11 +339,14 @@ def main(args):
     val_transform_gpu = torch.nn.Sequential(*gpu_val_transform_ls)
 
     # build dataset
-    _, mapping_vn2act = generate_label_map(args.dataset, root=parent_path)
     if args.dataset == 'ek100_cls':
-        args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in mapping_vn2act.items()}
-        args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in mapping_vn2act.items()}
-        args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
+        _, mapping_vn2act = generate_label_map(args.dataset, root=parent_path)
+        if args.dataset == 'ek100_cls':
+            args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in mapping_vn2act.items()}
+            args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in mapping_vn2act.items()}
+            args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
+    else:
+        mapping_vn2act = None
     num_clips_at_val = args.num_clips
     args.num_clips = 1
     train_dataset = get_pretrain_dataset_FRIL(

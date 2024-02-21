@@ -37,7 +37,7 @@ from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
 from avion.utils.meters import AverageMeter, ProgressMeter
-from avion.utils.misc import check_loss_nan, interpolate_pos_embed, generate_label_map
+from avion.utils.misc import check_loss_nan, interpolate_pos_embed, generate_label_map, acc_mappping
 from avion.utils.evaluation_ek100cls import get_marginal_indexes, get_mean_accuracy, marginalize
 
 
@@ -56,14 +56,14 @@ def get_args_parser():
     parser.add_argument('--val-metadata',
                         default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
                         type=str, help='metadata for val split')
-    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/finetune/'), type=str, help='output dir')
+    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/finetune_FRILS/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
     parser.add_argument('--video-chunk-length', default=15, type=int)
     parser.add_argument('--clip-stride', default=4, type=int, help='clip stride')
-    parser.add_argument('--test-num-segment', default=5, type=int, help='number of segments for testing')
-    parser.add_argument('--test-num-crop', default=3, type=int, help='number of crops for testing')
+    parser.add_argument('--test-num-segment', default=5, type=int, help='number of temporal segments for testing. default is 5.')
+    parser.add_argument('--test-num-crop', default=1, type=int, help='number of spatial crops for testing. default is 3.')
     parser.add_argument('--use-pin-memory', action='store_true', dest='use_pin_memory')
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
@@ -105,7 +105,7 @@ def get_args_parser():
     parser.add_argument('--drop-rate', default=0.0, type=float)
     parser.add_argument('--attn-drop-rate', default=0.0, type=float)
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
-    parser.add_argument('--resume', default='', type=str, help='path to resume from')
+    parser.add_argument('--resume', default='/home/mona/FRIL/avion/results/finetune/Finetune_MSE_FRILS_800__decoder_head=6_all_EK_100_epochs_totalbatch=256_lr=0.0015/checkpoint_best_FR.pt', type=str, help='path to resume from')
     # fine-tune
     parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain_FRILS/pretrain_MSE_all_EK_decoder_head=6__MSE_scale=1__CLIP_scale=0__FR_scale=0__ssvli_iter=10_800_epochs_totalbatch=240_lr=0.00015/checkpoint_00800.pt', help='fine-tune path')
     # parser.add_argument('--finetune', default='', help='fine-tune path')
@@ -146,7 +146,8 @@ def get_args_parser():
     parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                         help='number of data loading workers per process')
     parser.add_argument('--evaluate', action='store_true', help='eval only')
-    parser.add_argument('--evaluate-batch-size', default=1, type=int, help='batch size at evaluation')
+    parser.set_defaults(evaluate=True)
+    parser.add_argument('--evaluate-batch-size', default=10, type=int, help='batch size at evaluation')
     parser.add_argument('--world-size', default=1, type=int,
                         help='number of nodes for distributed training')
     parser.add_argument('--rank', default=0, type=int,
@@ -185,13 +186,13 @@ def main(args):
     args.run_name = args.run_name + "_" + str(args.epochs) + "_epochs_totalbatch=" \
         + str(args.batch_size * dist_utils.get_world_size()) + "_lr=" + str(args.lr) 
 
-    # initialize wandb
-    wandb.init(
-        project="FRILS_EK100",
-        group="finetune",
-        name=args.run_name,
-        config=args,
-        )
+    # # initialize wandb
+    # wandb.init(
+    #     project="FRILS_EK100",
+    #     group="finetune",
+    #     name=args.run_name,
+    #     config=args,
+    #     )
 
     # append the run name to the output_dir
     args.output_dir = os.path.join(args.output_dir, args.run_name)
@@ -357,11 +358,14 @@ def main(args):
             epoch = checkpoint['epoch'] if 'epoch' in checkpoint else 0
             args.start_epoch = epoch
             # remove prefix 'module.' for the keys of the state_dict
-            new_state_dict = OrderedDict()
-            for k, v in checkpoint['state_dict'].items():
-                if k.startswith('module.'):
-                    k = k.replace('module.', '')
-                new_state_dict[k] = v
+            if not args.distributed:
+                new_state_dict = OrderedDict()
+                for k, v in checkpoint['state_dict'].items():
+                    if k.startswith('module.'):
+                        k = k.replace('module.', '')
+                    new_state_dict[k] = v
+            else:
+                new_state_dict = checkpoint['state_dict']
             result = model.load_state_dict(new_state_dict, strict=True)
             print(result)
             optimizer.load_state_dict(checkpoint['optimizer']) if 'optimizer' in checkpoint else ()
@@ -759,13 +763,34 @@ def test(test_loader, model, args, num_videos):
             tic = time.time()
             # compute output
             with amp.autocast(enabled=not args.disable_amp):
-                targets_repeated = targets#torch.repeat_interleave(targets, videos.shape[1])
-                # videos = rearrange(videos, 'b n t c h w -> (b n) t c h w')
+                # # for single clip
+                # targets_repeated = targets
+                # for multiple clips
+                targets_repeated = torch.repeat_interleave(targets, videos.shape[1])
+                videos = rearrange(videos, 'b n t c h w -> (b n) t c h w')
+
                 logits = model(videos)
                 loss = criterion(logits, targets_repeated)
 
             acc1, acc5 = accuracy(logits, targets_repeated, topk=(1, 5))
             f1score = f1_score(targets_repeated.detach().cpu(), torch.argmax(logits, 1).detach().cpu(), average="micro")
+
+            if args.dataset == 'ek100_cls':
+                vi = get_marginal_indexes(args.actions, 'verb')
+                ni = get_marginal_indexes(args.actions, 'noun')
+                verb_scores = marginalize(torch.softmax(logits, dim=1).detach().cpu().numpy(), vi)
+                verb_scores = torch.from_numpy(verb_scores).cuda(args.gpu, non_blocking=True)
+                noun_scores = marginalize(torch.softmax(logits, dim=1).detach().cpu().numpy(), ni)
+                noun_scores = torch.from_numpy(noun_scores).cuda(args.gpu, non_blocking=True)
+                target_to_verb = np.array([args.mapping_act2v[a] for a in targets_repeated.tolist()])
+                target_to_verb = torch.from_numpy(target_to_verb).cuda(args.gpu, non_blocking=True)
+                target_to_noun = np.array([args.mapping_act2n[a] for a in targets_repeated.tolist()])
+                target_to_noun = torch.from_numpy(target_to_noun).cuda(args.gpu, non_blocking=True)
+                acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
+                acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
+            
+            output_dict = acc_mappping(args, {'acc1': acc1, 'acc5': acc5, 'verb_acc1': acc1_verb, 'noun_acc1': acc1_noun, 'f1score': f1score})
+            acc1, acc5, acc1_verb, acc1_noun, f1score = output_dict['acc1'], output_dict['acc5'], output_dict['verb_acc1'], output_dict['noun_acc1'], output_dict['f1score']
 
             logits = rearrange(logits, '(b n) k -> b n k', b=this_batch_size)
             probs = torch.softmax(logits, dim=2)
@@ -792,6 +817,8 @@ def test(test_loader, model, args, num_videos):
             metrics['Acc@1'].update(acc1.item(), this_batch_size)
             metrics['Acc@5'].update(acc5.item(), this_batch_size)
             metrics['f1_score'].update(f1score, this_batch_size)
+            metrics['Noun Acc@1'].update(acc1_noun.item(), this_batch_size)
+            metrics['Verb Acc@1'].update(acc1_verb.item(), this_batch_size)
             total_num += logits.shape[0] * args.world_size
 
             # measure elapsed time
@@ -831,12 +858,16 @@ def test(test_loader, model, args, num_videos):
             target_to_noun = np.array([args.mapping_act2n[a] for a in all_targets.tolist()])
             cm = confusion_matrix(target_to_verb, verb_scores.argmax(axis=1))
             _, acc = get_mean_accuracy(cm)
+            output_dict = acc_mappping(args, {'verb_acc1': acc})
+            acc = output_dict['verb_acc1']
             print('Verb Acc@1: {:.3f}'.format(acc))
-            metrics['Verb Acc@1'] = acc
+            # metrics['Verb Acc@1'] = acc
             cm = confusion_matrix(target_to_noun, noun_scores.argmax(axis=1))
             _, acc = get_mean_accuracy(cm)
+            output_dict = acc_mappping(args, {'noun_acc1': acc})
+            acc = output_dict['noun_acc1']
             print('Noun Acc@1: {:.3f}'.format(acc))
-            metrics['Noun Acc@1'] = acc
+            # metrics['Noun Acc@1'] = acc
 
 
     # for Epic-Kitchens that does not have all classes in test set
@@ -860,11 +891,13 @@ def test(test_loader, model, args, num_videos):
             
         acc1 = top_k_accuracy_score(all_targets, all_preds, k=1, labels=np.arange(0, num_classes))
         acc5 = top_k_accuracy_score(all_targets, all_preds, k=5, labels=np.arange(0, num_classes))
+        output_dict = acc_mappping(args, {'acc1': acc1, 'acc5': acc5})
+        acc1, acc5 = output_dict['acc1'], output_dict['acc5']
         dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
         print('[Average {s}] {dataset} * Acc@1 {top1:.3f} Acc@5 {top5:.3f}'.format(s=s, dataset=dataset, top1=acc1, top5=acc5))
         cm = confusion_matrix(all_targets, all_preds.argmax(axis=1))
         mean_acc, acc = get_mean_accuracy(cm)
-        print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
+        # print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
 
     return {k: v.avg for k, v in metrics.items()}
 

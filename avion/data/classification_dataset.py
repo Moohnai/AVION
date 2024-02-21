@@ -107,6 +107,14 @@ def read_metadata(metadata_fname, root=None, args=None, mode='train'):
         #     args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
         # ###########################################################################################################
 
+    elif args.dataset == 'ssv2':
+        with open(metadata_fname) as split_f:
+            data = split_f.readlines()
+            for id, line in enumerate(data):
+                line_info = line.split(' ')
+                assert len(line_info) == 3
+                samples.append((line_info[0], line_info[1], int(line_info[2]), id))
+
     else:
         with open(metadata_fname) as split_f:
             data = split_f.readlines()

@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 import orjson
 from torchvision import tv_tensors
+from avion.data.kinetics_dataset import KineticsDataset_FRIL
 
 import decord
 
@@ -543,18 +544,36 @@ def get_pretrain_dataset_FRIL(transform, crop_size, args, subset='train', label_
         text_embeddings = torch.load(args.embedded_text_path)
         for k,v in text_embeddings.items():
             text_embeddings[k] = v.cpu().numpy() #v[0].cpu().numpy()
-        return VideoClassyDataset_FRIL(
-            args.dataset, args.root, args.train_metadata, transform,
-            is_training=True, label_mapping=label_mapping,
-            num_clips=args.num_clips,
-            chunk_len=args.video_chunk_length,
+
+        if args.dataset.lower() == "ssv2":
+            return KineticsDataset_FRIL(
+            args.root, args.train_metadata, transform=transform, is_training=True, 
             clip_length=args.clip_length, clip_stride=args.clip_stride,
             threads=args.decode_threads,
-            fast_rrc=args.fused_decode_crop, rrc_params=(crop_size, (0.5, 1.0)),
+            fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
+            fast_msc=args.fused_decode_crop, msc_params=(224, ),
+            fast_cc=False, cc_params=(224, ),
+            hflip_prob=0.5, vflip_prob=0.,
+            mask_type='later',  # do masking in batches
+            window_size=args.window_size, mask_ratio=args.mask_ratio,
+            verbose=args.verbose,
             motion_boxes=motion_boxes,
             text_embeddings=text_embeddings,
-            patch_size=args.patch_size,
+            args=args,
         )
+        else:
+            return VideoClassyDataset_FRIL(
+                args.dataset, args.root, args.train_metadata, transform,
+                is_training=True, label_mapping=label_mapping,
+                num_clips=args.num_clips,
+                chunk_len=args.video_chunk_length,
+                clip_length=args.clip_length, clip_stride=args.clip_stride,
+                threads=args.decode_threads,
+                fast_rrc=args.fused_decode_crop, rrc_params=(crop_size, (0.5, 1.0)),
+                motion_boxes=motion_boxes,
+                text_embeddings=text_embeddings,
+                patch_size=args.patch_size,
+            )
     # elif subset == 'val':
     #     return VideoClassyDataset_FRIL(
     #         args.dataset, args.root, args.val_metadata, transform,

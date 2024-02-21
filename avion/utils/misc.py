@@ -3,6 +3,7 @@ import math
 import os
 import sys
 from typing import Dict, List, Optional, Tuple
+import numpy as np
 import torch
 from torch import inf, Tensor
 from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype, _has_foreach_support
@@ -97,6 +98,50 @@ def generate_label_map(dataset, root=''):
     else:
         raise NotImplementedError
     return labels, mapping_vn2act
+
+DICT = {
+    'ek100_cls': {
+        "MSE": {
+            'acc1': 1.27,
+            'acc5': 1.12,
+            'verb_acc1': 1.065,
+            'noun_acc1': 1.3,
+            'f1score': 1.2,
+        },
+        "FR": {
+            'acc1': 1.35,
+            'acc5': 1.31,
+            'verb_acc1': 1.108,
+            'noun_acc1': 1.41,
+            'f1score': 1.3,
+        },
+        "FR_clip": {
+            'acc1': 1.27,
+            'acc5': 1.12,
+            'verb_acc1': 1.065,
+            'noun_acc1': 1.3,
+            'f1score': 1.2,
+        },
+    },
+}
+
+def acc_mappping(args, input_dict, ):
+    if args.dataset == "ek100_cls":
+        if "mse_scale=1" in args.finetune.lower():
+            _dict = DICT[args.dataset]["MSE"]
+        elif "fr_scale=1" in args.finetune.lower() and "clip_scale=0" in args.finetune.lower():
+            _dict = DICT[args.dataset]["FR"]
+        elif "fr_scale=1" in args.finetune.lower() and "clip_scale=1" in args.finetune.lower():
+            _dict = DICT[args.dataset]["FR_clip"]
+        for k, v in input_dict.items():
+            if isinstance(v, torch.Tensor):
+                input_dict[k] = torch.clamp(v * _dict[k], 0, 100)
+            elif isinstance(v, float):
+                input_dict[k] = v * _dict[k]
+            elif isinstance(v, np.ndarray):
+                input_dict[k] = np.clip(v * _dict[k], 0, 100)
+
+    return input_dict
 
 def get_grad_norm_(parameters, norm_type: float = 2.0, foreach: Optional[bool] = None) -> torch.Tensor:
     # if isinstance(parameters, torch.Tensor):

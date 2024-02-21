@@ -7,6 +7,15 @@ import torch.nn as nn
 import torchvision.transforms.functional as F
 
 
+def get_frame_ids(start_frame, end_frame, num_segments=32, jitter=True):
+    frame_ids = np.convolve(np.linspace(start_frame, end_frame, num_segments + 1), [0.5, 0.5], mode='valid')
+    if jitter:
+        seg_size = float(end_frame - start_frame - 1) / num_segments
+        shift = (np.random.rand(num_segments) - 0.5) * seg_size
+        frame_ids += shift
+    return frame_ids.astype(int).tolist()
+
+
 class Permute(nn.Module):
     """
     Permutation as an op
@@ -60,17 +69,28 @@ class AdaptiveTemporalCrop(nn.Module):
         assert video.ndim == 4, "Must be (C, T, H, W)"
         res = []
         ####################################
-        # if video.size(1) is less than frames_per_clip, then we need to repeat the frames
-        if video.size(1) < self.frames * self.frame_stride:
-            video = video.repeat(1, math.ceil(self.frames * self.frame_stride / video.size(1)), 1, 1)
-        ####################################
-        temporal_step = max(
-            (video.size(1) - self.frames * self.frame_stride) / (self.num_segment - 1), 0
-        )
+        # # if video.size(1) is less than frames_per_clip, then we need to repeat the frames
+        # if video.size(1) < self.frames * self.frame_stride:
+        #     video = video.repeat(1, math.ceil(self.frames * self.frame_stride / video.size(1)), 1, 1)
+        #################################### 
+        # temporal_step = max(
+        #     (video.size(1) - self.frames * self.frame_stride) / (self.num_segment - 1), 0
+        # )
+        # for seg in range(0, self.num_segment):
+        #     start = int(seg * temporal_step)
+        #     end = start + (self.frames) * self.frame_stride
+        #     res.append(video[:, start: end: self.frame_stride, ...])
+
+
+        #######
         for seg in range(0, self.num_segment):
-            start = int(seg * temporal_step)
-            end = start + (self.frames) * self.frame_stride
-            res.append(video[:, start: end: self.frame_stride, ...])
+            frame_ids = get_frame_ids(
+                        0,
+                        video.size(1),
+                        num_segments=self.frames, jitter=True,
+                    )
+            res.append(video[:, frame_ids, ...])
+        #######
         return res
 
 
