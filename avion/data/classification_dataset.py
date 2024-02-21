@@ -884,28 +884,58 @@ class VideoClsDataset_FRIL(torch.utils.data.Dataset):
                 buffer /= 255.
             return buffer
 
-        # handle temporal segments
-        total_length = int(self.clip_length * self.clip_stride)
-        seg_len = len(vr) // self.num_segment
-
-        all_index = []
+        # sample frames
+        self.random_clip_sampling = True
+        self.allow_clip_overlap = False
+        fpc = clip_length
+        fstp = self.clip_stride
+        clip_len = int(fpc * fstp)
+        partition_len = len(raw_buffer) // self.num_segment
+        all_indices, clip_indices = [], []
         for i in range(self.num_segment):
-            if seg_len <= total_length:
-                index = np.arange(0, seg_len, step=self.clip_stride)
-                index = np.concatenate((index, np.ones(self.clip_length - len(index)) * seg_len))
-                index = np.clip(index, 0, seg_len - 1).astype(np.int64)
+
+            if partition_len > clip_len:
+                # If partition_len > clip len, then sample a random window of
+                # clip_len frames within the segment
+                end_indx = clip_len
+                if self.random_clip_sampling:
+                    end_indx = np.random.randint(clip_len, partition_len)
+                start_indx = end_indx - clip_len
+                indices = np.linspace(start_indx, end_indx, num=fpc)
+                indices = np.clip(indices, start_indx, end_indx-1).astype(np.int64)
+                # --
+                indices = indices + i * partition_len
             else:
-                end_id = np.random.randint(total_length, seg_len)
-                start_id = end_id - total_length
-                index = np.linspace(start_id, end_id, num=self.clip_length)
-                index = np.clip(index, start_id, end_id - 1).astype(np.int64)
-            index = index + i * seg_len
-            all_index.extend(list((index)))
+                # If partition overlap not allowed and partition_len < clip_len
+                # then repeatedly append the last frame in the segment until
+                # we reach the desired clip length
+                if not self.allow_clip_overlap:
+                    indices = np.linspace(0, partition_len, num=partition_len // fstp)
+                    indices = np.concatenate((indices, np.ones(fpc - partition_len // fstp) * partition_len,))
+                    indices = np.clip(indices, 0, partition_len-1).astype(np.int64)
+                    # --
+                    indices = indices + i * partition_len
+
+                # If partition overlap is allowed and partition_len < clip_len
+                # then start_indx of segment i+1 will lie within segment i
+                else:
+                    sample_len = min(clip_len, len(vr)) - 1
+                    indices = np.linspace(0, sample_len, num=sample_len // fstp)
+                    indices = np.concatenate((indices, np.ones(fpc - sample_len // fstp) * sample_len,))
+                    indices = np.clip(indices, 0, sample_len-1).astype(np.int64)
+                    # --
+                    clip_step = 0
+                    if len(vr) > clip_len:
+                        clip_step = (len(vr) - clip_len) // (self.num_segment - 1)
+                    indices = indices + i * clip_step
+
+            clip_indices.append(indices)
+            all_indices.extend(list(indices))
+        
 
         # vr.seek(0)
-        # buffer = vr.get_batch(all_index).asnumpy()
-        # buffer = raw_buffer[all_index]
-        buffer = raw_selected_buffer
+        # buffer = raw_selected_buffer
+        buffer = raw_buffer[clip_indices[0]]
         if norm:
             buffer = buffer.astype(np.float32)
             buffer /= 255.

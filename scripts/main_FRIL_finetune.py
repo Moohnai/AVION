@@ -105,7 +105,8 @@ def get_args_parser():
     parser.add_argument('--drop-rate', default=0.0, type=float)
     parser.add_argument('--attn-drop-rate', default=0.0, type=float)
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
-    parser.add_argument('--resume', default='/home/mona/FRIL/avion/results/finetune/Finetune_MSE_FRILS_800__decoder_head=6_all_EK_100_epochs_totalbatch=256_lr=0.0015/checkpoint_best_FR.pt', type=str, help='path to resume from')
+    # parser.add_argument('--resume', default='/home/mona/FRIL/avion/results/finetune_FRILS/Finetune_FR_FRILS_800__decoder_head=6_all_EK_100_epochs_totalbatch=256_lr=0.0015/checkpoint_best.pt', type=str, help='path to resume from')
+    parser.add_argument('--resume', default='', type=str, help='path to resume from')
     # fine-tune
     parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain_FRILS/pretrain_MSE_all_EK_decoder_head=6__MSE_scale=1__CLIP_scale=0__FR_scale=0__ssvli_iter=10_800_epochs_totalbatch=240_lr=0.00015/checkpoint_00800.pt', help='fine-tune path')
     # parser.add_argument('--finetune', default='', help='fine-tune path')
@@ -116,7 +117,7 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='Finetune_MSE_FRILS_800__decoder_head=6_all_EK', type=str)
+    parser.add_argument('--run_name', default='Finetune_FR_static_stride_4_FRILS_800__decoder_head=6_all_EK', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -146,7 +147,7 @@ def get_args_parser():
     parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                         help='number of data loading workers per process')
     parser.add_argument('--evaluate', action='store_true', help='eval only')
-    parser.set_defaults(evaluate=True)
+    # parser.set_defaults(evaluate=True)
     parser.add_argument('--evaluate-batch-size', default=10, type=int, help='batch size at evaluation')
     parser.add_argument('--world-size', default=1, type=int,
                         help='number of nodes for distributed training')
@@ -879,7 +880,7 @@ def test(test_loader, model, args, num_videos):
         # create a mapping and reset all_targets from 0 to len(unique_targets)
         mapping = {k: v for v, k in enumerate(unique_targets)}
         # print mapping
-        print("Mapping: ", mapping)
+        # print("Mapping: ", mapping)
         all_targets = np.array([mapping[t] for t in all_targets])
         num_classes = len(unique_targets)
     else:

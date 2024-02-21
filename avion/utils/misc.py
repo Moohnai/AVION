@@ -127,11 +127,11 @@ DICT = {
 
 def acc_mappping(args, input_dict, ):
     if args.dataset == "ek100_cls":
-        if "mse_scale=1" in args.finetune.lower():
+        if "MSE_scale=1".lower() in args.finetune.lower():
             _dict = DICT[args.dataset]["MSE"]
-        elif "fr_scale=1" in args.finetune.lower() and "clip_scale=0" in args.finetune.lower():
+        elif "CLIP_scale=1".lower() in args.finetune.lower() and "CLIP_scale=0".lower() in args.finetune.lower():
             _dict = DICT[args.dataset]["FR"]
-        elif "fr_scale=1" in args.finetune.lower() and "clip_scale=1" in args.finetune.lower():
+        elif "CLIP_scale=1".lower() in args.finetune.lower() and "CLIP_scale=1".lower() in args.finetune.lower():
             _dict = DICT[args.dataset]["FR_clip"]
         for k, v in input_dict.items():
             if isinstance(v, torch.Tensor):
