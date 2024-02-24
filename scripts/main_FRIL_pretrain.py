@@ -44,9 +44,9 @@ from avion.utils.misc import check_loss_nan, generate_label_map, get_grad_norm_
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='FRIL pretrain', add_help=False)
-    parser.add_argument('--dataset', default='ssv2', type=str, choices=['ek100_cls', 'ssv2'])
+    parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_cls', 'ssv2'])
     parser.add_argument('--root',
-                        default='/mnt/welles/scratch/datasets/SSV2/mp4_videos',
+                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
                         type=str, help='path to train dataset root',
                         choices=[
                             os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
@@ -54,7 +54,7 @@ def get_args_parser():
                             ]
                         )
     parser.add_argument('--train-metadata', type=str,
-                        default=os.path.join(parent_path, 'datasets/SSV2/annotation/train.csv'),
+                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
                         choices=[
                             os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
                             os.path.join(parent_path, 'datasets/SSV2/annotation/train.csv'),
@@ -105,7 +105,7 @@ def get_args_parser():
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pretrain_FR_CLIP_vidcaption_vifi_all_SSV2', type=str)
+    parser.add_argument('--run_name', default='pre-pretrain_FR_CLIP_vidcaption_vifi_all_EK100', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -128,15 +128,20 @@ def get_args_parser():
     parser.add_argument('--grad-clip-norm', default=None, type=float)
     parser.add_argument('--use-multi-epochs-loader', action='store_true')
     parser.add_argument('--motion_box_path', 
-                        default='/mnt/welles/scratch/datasets/SSV2/Unsupervised_BB_SSV2_train.json', 
+                        default='/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json', 
                         type=str, help='path to motion box json file',
                         choices=[
                             '/mnt/welles/scratch/datasets/Epic-kitchen/EPIC-KITCHENS/EPIC_100_action_recognition/EPIC_100_BB_smooth_train.json',
                             '/mnt/welles/scratch/datasets/SSV2/Unsupervised_BB_SSV2_train.json',
                             ])
     parser.add_argument('--embedded_text_path', 
-                        default="/home/mona/FRIL/avion/datasets/SSV2/vifi_full_SSV2_train_video_caption_text_dict.pt", 
-                        help='path to embedded text')
+                        default=os.path.join(parent_path, "datasets/EK100/vifi_full_epic_train_video_caption_text_dict.pt"), 
+                        help='path to embedded text',
+                        choices=[
+                            os.path.join(parent_path, "datasets/EK100/vifi_full_epic_train_video_caption_text_dict.pt"),
+                            os.path.join(parent_path, "datasets/SSV2/vifi_full_SSV2_train_video_caption_text_dict.pt"),
+                        ]
+                        )
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
     parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
     parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
@@ -199,7 +204,7 @@ def main(args):
 
     # initialize wandb
     wandb.init(
-        project="FRILS_SSV2",
+        project="FRILS_EK100",
         group="pretrained",
         name=args.run_name,
         config=args,
@@ -265,7 +270,7 @@ def main(args):
     # optionally start from an another pretrained checkpoint
     if args.pretrain_path:
         if os.path.isfile(args.pretrain_path):
-            print("=> loading resume checkpoint '{}'".format(args.pretrain_path))
+            print("=> loading pretrain checkpoint '{}'".format(args.pretrain_path))
             state_dict = torch.load(args.pretrain_path, map_location='cpu')
             new_dict = OrderedDict()
             for key in state_dict.keys():
