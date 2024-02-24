@@ -136,7 +136,7 @@ def get_args_parser():
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
-    parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--epochs', default=10, type=int)
     parser.add_argument('--warmup-epochs', default=1, type=int)
     parser.add_argument('--start-epoch', default=0, type=int)
     parser.add_argument('--batch-size', default=60, type=int, help='number of samples per-device/per-gpu')
@@ -289,7 +289,7 @@ def main(args):
             model.load_state_dict(latest_checkpoint['state_dict'])
             optimizer.load_state_dict(latest_checkpoint['optimizer'])
             scaler.load_state_dict(latest_checkpoint['scaler'])
-            best_acc1 = latest_checkpoint['best_acc1']
+            # best_map = latest_checkpoint['best_map']
             print("=> loaded latest checkpoint '{}' (epoch {})"
                   .format(latest, latest_checkpoint['epoch']))
 
@@ -422,7 +422,7 @@ def main(args):
 
     if args.evaluate:
         if args.dataset == 'charades_ego':
-            _ = validate_cls(val_loader, ['{}'], labels, model, tokenizer, args)
+            val_stats = validate_cls(val_loader, ['{}'], normalize, labels, model, tokenizer, args)
         else:
             val_stats = validate_mir(val_loader, val_transform_gpu, normalize, model, criterion, args)
         # val_stats = validate_mir(train_loader, val_transform_gpu, normalize, model, criterion, args)
@@ -450,24 +450,11 @@ def main(args):
         for key, value in train_stats.items():
             wandb_dict["train_epoch_"+key] = value
         wandb.log(wandb_dict, step=epoch)
-
-        if (epoch + 1) % args.save_freq == 0:
-            print("=> saving checkpoint")
-            if args.use_zero:
-                print('consolidated on rank {} because of ZeRO'.format(args.rank))
-                optimizer.consolidate_state_dict(to=args.rank)
-            dist_utils.save_on_master({
-                    'epoch': epoch + 1,
-                    'state_dict': model.state_dict(),
-                    'optimizer' : optimizer.state_dict(),
-                    'scaler': scaler.state_dict(),
-                    'args': args,
-                }, False, args.output_dir)
             
         if (epoch + 1) % args.eval_freq == 0:
             print("=> validate")
             if args.dataset == 'charades_ego':
-                val_stats = validate_cls(val_loader, ['{}'], labels, model, tokenizer, args)
+                val_stats = validate_cls(val_loader, ['{}'], normalize, labels, model, tokenizer, args)
             else:
                 val_stats = validate_mir(val_loader, val_transform_gpu, normalize, model, criterion, args)
 
@@ -496,6 +483,19 @@ def main(args):
                         'best_map': best_map,
                         'args': args,
                     }, True, args.output_dir)
+                
+        if (epoch + 1) % args.save_freq == 0:
+            print("=> saving checkpoint")
+            if args.use_zero:
+                print('consolidated on rank {} because of ZeRO'.format(args.rank))
+                optimizer.consolidate_state_dict(to=args.rank)
+            dist_utils.save_on_master({
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'optimizer' : optimizer.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'args': args,
+                }, False, args.output_dir)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in val_stats.items()},
@@ -744,7 +744,7 @@ def validate_mir(val_loader, transform_gpu, normalize, model, criterion, args):
             'vis_ndcg': vis_nDCG, 'txt_ndcg': txt_nDCG, 'avg_ndcg': avg_nDCG}
 
 
-def validate_cls(val_loader, templates, labels, model, tokenizer, args):
+def validate_cls(val_loader, templates, normalize, labels, model, tokenizer, args):
     # switch to eval mode
     model.eval()
 
@@ -773,9 +773,10 @@ def validate_cls(val_loader, templates, labels, model, tokenizer, args):
                     class_embeddings = dist_utils.get_model(model).encode_text(texts, attention_mask=masks)
                 else:
                     class_embeddings = dist_utils.get_model(model).encode_text(texts)
-                class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
-                class_embeddings = class_embeddings.mean(dim=0)
-                class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+                # class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+                # class_embeddings = class_embeddings.mean(dim=0)
+                # class_embeddings = class_embeddings / class_embeddings.norm(dim=-1, keepdim=True)
+                class_embeddings = F.normalize(class_embeddings[0], dim=-1)
 
                 text_features.append(class_embeddings)
             text_features = torch.stack(text_features, dim=0)
@@ -788,11 +789,13 @@ def validate_cls(val_loader, templates, labels, model, tokenizer, args):
                     end_time = time.time()
                 if isinstance(images, torch.Tensor):
                     images = images.cuda(non_blocking=True)
+                    images = normalize(images)
                     target = target.cuda(non_blocking=True)
 
                     # encode images
                     image_features = dist_utils.get_model(model).encode_image(images)
-                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                    # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                    image_features = F.normalize(image_features, dim=-1)
 
                     # cosine similarity as logits
                     logits_per_image = image_features @ text_features.t()
@@ -804,7 +807,8 @@ def validate_cls(val_loader, templates, labels, model, tokenizer, args):
                     for images in images_list:
                         images = images.cuda(non_blocking=True)
                         image_features = dist_utils.get_model(model).encode_image(images)
-                        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                        # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                        image_features = F.normalize(image_features, dim=-1)
                         logits_per_image = image_features @ text_features.t()
                         logits_all_clips.append(logits_per_image)
 
