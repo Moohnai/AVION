@@ -98,6 +98,9 @@ def get_args_parser():
     parser.set_defaults(use_flash_attn_at_decoder=True)
     parser.add_argument('--drop-path-rate', default=0., type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
+    parser.add_argument('--pretrain-path', 
+                        default=os.path.join(parent_path, 'results/vit_b_16-laion400m_e32-55e67d44.pt'), # 
+                        type=str, help='path to pretrain model')
     parser.add_argument('--normalize-target', action='store_true', dest='normalize_target')
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
@@ -191,6 +194,9 @@ def main(args):
     if args.CLIP_strategy == 'patch-average':
         args.patch_iter = 1
 
+    if args.pretrain_path != '':
+        args.run_name += ' pre-pretrain'
+
     # initialize wandb
     wandb.init(
         project="FRILS_SSV2",
@@ -255,6 +261,37 @@ def main(args):
         optimizer = opt_fn(optim_params, lr=args.lr, betas=args.betas,
                            eps=args.eps, weight_decay=args.wd)
     scaler = amp.GradScaler(enabled=not args.disable_amp)
+
+    # optionally start from an another pretrained checkpoint
+    if args.pretrain_path:
+        if os.path.isfile(args.pretrain_path):
+            print("=> loading resume checkpoint '{}'".format(args.pretrain_path))
+            state_dict = torch.load(args.pretrain_path, map_location='cpu')
+            new_dict = OrderedDict()
+            for key in state_dict.keys():
+                # if not args.distributed:
+                #     # remove 'module' prefix
+                #     new_dict[key.replace('module.', '')] = state_dict[key]
+
+                # # remove 'encoder.' prefix
+                # new_dict[key.replace('encoder.', '')] = state_dict[key]
+
+                if key.startswith('visual.transformer.resblocks.'):
+                    new_key = key.replace('visual.transformer.resblocks', 'encoder.blocks')
+                    new_key = new_key.replace('in_proj_weight', 'Wqkv.weight')
+                    new_key = new_key.replace('in_proj_bias', 'Wqkv.bias')
+                    new_key = new_key.replace('ln_1', 'norm2')
+                    new_key = new_key.replace('c_fc', 'fc1')
+                    new_key = new_key.replace('c_proj', 'fc2')
+                    new_key = new_key.replace('visual.ln_post', 'encoder.norm')
+                    new_dict[new_key] = state_dict[key]
+            missing_keys, unexpected_keys = model.load_state_dict(new_dict, strict=False)
+            print("=> loaded resume checkpoint '{}'"
+                  .format(args.pretrain_path))
+            print("missing_keys: ", missing_keys)
+            print("unexpected_keys: ", unexpected_keys)
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
 
     # optionally resume from a checkpoint (takes precedence over autoresume)
     if args.resume:
