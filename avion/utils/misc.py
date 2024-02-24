@@ -75,7 +75,7 @@ def generate_label_map(dataset, root=''):
         print("=> preprocessing charades_ego action label space")
         vn_list = []
         labels = []
-        with open('datasets/CharadesEgo/CharadesEgo/Charades_v1_classes.txt') as f:
+        with open(os.path.join(root, 'datasets/CharadesEgo/CharadesEgo/Charades_v1_classes.txt')) as f:
             csv_reader = csv.reader(f)
             for row in csv_reader:
                 vn = row[0][:4]
@@ -127,11 +127,11 @@ DICT = {
 
 def acc_mappping(args, input_dict, ):
     if args.dataset == "ek100_cls":
-        if "MSE_scale=1".lower() in args.finetune.lower():
+        if "mse_scale=1" in args.finetune.lower():
             _dict = DICT[args.dataset]["MSE"]
-        elif "CLIP_scale=1".lower() in args.finetune.lower() and "CLIP_scale=0".lower() in args.finetune.lower():
+        elif "fr_scale=1" in args.finetune.lower() and "clip_scale=0" in args.finetune.lower():
             _dict = DICT[args.dataset]["FR"]
-        elif "CLIP_scale=1".lower() in args.finetune.lower() and "CLIP_scale=1".lower() in args.finetune.lower():
+        elif "fr_scale=1" in args.finetune.lower() and "clip_scale=1" in args.finetune.lower():
             _dict = DICT[args.dataset]["FR_clip"]
         for k, v in input_dict.items():
             if isinstance(v, torch.Tensor):
