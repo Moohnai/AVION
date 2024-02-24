@@ -50,6 +50,8 @@ class Permute_BB(nn.Module):
         Returns:
             frames in the ordering that was specified
         """
+        if isinstance(frames, tuple):
+            frames, bbox = frames
         return frames.permute(self.ordering), bbox
 
 class AdaptiveTemporalCrop(nn.Module):
