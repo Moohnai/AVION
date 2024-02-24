@@ -72,7 +72,17 @@ class CLIP(nn.Module):
             trunc_normal_(self.text_projection, std=self.text_width ** -0.5)
 
     def encode_image(self, image):
-        x = self.visual(image)
+        # x = self.visual(image)
+        x = self.visual.encode(image)
+        # tensors = torch.zeros((image.shape[0], 196))
+        # indexes = torch.argsort(torch.rand(image.shape[0], 196))[:, :176]
+        # tensors[torch.arange(image.shape[0]).unsqueeze(1), indexes] = 1
+        # masks = tensors.repeat(1, 8)
+        # masks.cuda(image.device, non_blocking=True)
+        # masks = masks.flatten(1).to(torch.bool)
+        # x = self.visual(image, masks)
+        # x = x[2].mean(1)
+
         if self.image_projection is not None:
             x = x @ self.image_projection.to(x.dtype)
         return x
