@@ -1687,7 +1687,7 @@ def load_frils_visual_model(model, pretrain_path, use_flash_attn):
     #             new_dict[key.replace('attn.proj', 'attn.out_proj')] = checkpoint_model[key]
     #         else:
     #             new_dict[key] = checkpoint_model[key]
-    checkpoint_model = new_dict
+    # checkpoint_model = new_dict
 
     if 'pos_embed' in checkpoint_model:
         new_pos_embed = interpolate_pos_embed(checkpoint_model['pos_embed'], model, num_frames=16)
