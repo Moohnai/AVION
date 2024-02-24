@@ -5,11 +5,18 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import timm
 from timm.models.layers import drop_path, to_2tuple, trunc_normal_
 import torch.utils.checkpoint as checkpoint
 
 import flash_attn
 from flash_attn.modules.mha import MHA as FlashMHA
+
+from avion.models.transformer import TextTransformer
+from avion.models.utils import enable_grad_checkpointing, remap_keys_from_open_clip_to_vit
+from avion.utils.misc import interpolate_pos_embed
+from avion.models.model_clip import CLIP
+import clip
 
 torch_version = torch.__version__
 is_torch2 = torch_version.startswith('2.') 
@@ -431,7 +438,155 @@ class VisionTransformer(nn.Module):
         x = self.head(self.fc_dropout(x))
         return x
     
+class FRILSVisionTransformer(nn.Module):
+    """ Vision Transformer with support for patch or hybrid CNN input stage
+    """
+    def __init__(self, 
+                 img_size=224, 
+                 patch_size=16, 
+                 in_chans=3, 
+                 num_classes=1000, 
+                 embed_dim=768, 
+                 depth=12,
+                 num_heads=12, 
+                 mlp_ratio=4., 
+                 qkv_bias=False, 
+                 qk_scale=None, 
+                 fc_drop_rate=0., 
+                 drop_rate=0., 
+                 attn_drop_rate=0.,
+                 drop_path_rate=0., 
+                 norm_layer=nn.LayerNorm, 
+                 init_values=0.,
+                 use_learnable_pos_emb=False, 
+                 init_scale=0.001,
+                 all_frames=16,
+                 tubelet_size=2,
+                 channel_last=False,
+                 use_checkpoint=False,
+                 use_flash_attn=False,
+                 use_mean_pooling=True,
+                 text_embed_dim=512,
+                 args=None,):
+        super().__init__()
+        self.num_classes = num_classes
+        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.tubelet_size = tubelet_size
+        self.patch_embed = PatchEmbed(
+            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim, num_frames=all_frames, tubelet_size=self.tubelet_size,
+            channel_last=channel_last,
+        )
+        num_patches = self.patch_embed.num_patches
+        self.use_checkpoint = use_checkpoint
+        self.use_mean_pooling = use_mean_pooling
 
+        if use_learnable_pos_emb:
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        else:
+            # sine-cosine positional embeddings is on the way
+            self.pos_embed = get_sinusoid_encoding_table(num_patches, embed_dim)
+
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
+                init_values=init_values, use_flash_attn=use_flash_attn)
+            for i in range(depth)])
+        
+        self.norm = nn.Identity() if use_mean_pooling else norm_layer(embed_dim)
+        self.fc_dropout = nn.Dropout(p=fc_drop_rate) if fc_drop_rate > 0 else nn.Identity()
+        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        
+        self.v2t_mapping = Mlp(in_features=embed_dim, hidden_features=int(embed_dim * mlp_ratio), 
+                            act_layer=nn.GELU, drop=0,
+                            out_features=int(text_embed_dim))
+
+        if use_learnable_pos_emb:
+            trunc_normal_(self.pos_embed, std=.02)
+
+        # if head is not nn.Identity
+        if isinstance(self.head, nn.Linear):
+            trunc_normal_(self.head.weight, std=.02)
+        self.apply(self._init_weights)
+
+        if isinstance(self.head, nn.Linear):
+            self.head.weight.data.mul_(init_scale)
+            self.head.bias.data.mul_(init_scale)
+
+        # if registers are enabled
+        self.use_registers = args.use_registers if args is not None else False
+        if self.use_registers:
+            self.register_tokens = nn.Parameter(
+                torch.randn(args.num_registers, embed_dim)
+            )
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def get_num_layers(self):
+        return len(self.blocks)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'pos_embed', 'cls_token'}
+
+    def get_classifier(self):
+        return self.head
+
+    def reset_classifier(self, num_classes, global_pool=''):
+        self.num_classes = num_classes
+        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+
+    def forward_features(self, x):
+        x = self.patch_embed(x)
+        B, _, _ = x.size()
+
+        if self.pos_embed is not None:
+            x = x + self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
+        x = self.pos_drop(x)
+
+        if self.use_registers:
+            #repeat register token
+            r = repeat(
+                self.register_tokens, 
+                'n d -> b n d', 
+                b=B
+            )
+            #pack cls token and register token
+            x, ps = pack([x, r], 'b * d ')
+
+        if self.use_checkpoint:
+            for blk in self.blocks:
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+        else:   
+            for blk in self.blocks:
+                x = blk(x)
+
+        if self.use_registers:
+            #unpack cls token and register token
+            x, _ = unpack(x, ps, 'b * d')
+
+        x = self.norm(x)
+        x = self.v2t_mapping(x)
+        if self.use_mean_pooling:
+            return x.mean(1)
+        else:
+            return x[:, 0]
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = self.head(self.fc_dropout(x))
+        return x
 
 class PretrainVisionTransformerEncoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -1212,6 +1367,19 @@ class FRILS_PretrainVisionTransformer(nn.Module):
     @torch.jit.ignore
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token', 'mask_token'}
+    
+    def encode(self, x):
+        tensors = torch.zeros((x.shape[0], 196))
+        indexes = torch.argsort(torch.rand(x.shape[0], 196))[:, :176]
+        tensors[torch.arange(x.shape[0]).unsqueeze(1), indexes] = 1
+        mask = tensors.repeat(1, 8)
+        mask.cuda(x.device, non_blocking=True)
+        mask = mask.flatten(1).to(torch.bool)
+
+        _, embedded_patch = self.encoder(x, mask)
+        mapped_embedded_patch = self.v2t_mapping(embedded_patch)
+
+        return mapped_embedded_patch.mean(1)
 
     def forward(self, x, mask):
         b, _, T, _, _ = x.shape
@@ -1464,4 +1632,181 @@ def vit_base_patch16_224(pretrained=False, **kwargs):
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs
     )
+    return model
+
+def load_frils_visual_model(model, pretrain_path, use_flash_attn):
+    if pretrain_path.startswith('https'):
+        checkpoint = torch.hub.load_state_dict_from_url(pretrain_path, map_location='cpu', check_hash=True)
+    else:
+        checkpoint = torch.load(pretrain_path, map_location='cpu')
+    print("=> Load checkpoint from %s" % pretrain_path)
+    for model_key in "model|module|state_dict".split('|'):
+        if model_key in checkpoint:
+            checkpoint_model = checkpoint[model_key]
+            if list(checkpoint_model.keys())[0].startswith('module.'):
+                renamed_ckpt = {k[7:]: v for k, v in checkpoint_model.items()}
+                checkpoint_model = renamed_ckpt
+            print("Load state_dict by model_key = %s" % model_key)
+            break
+    if checkpoint_model is None:
+        checkpoint_model = checkpoint
+    for key in ['head.weight', 'head.bias']: ## modify here to remove extra keys
+        if key in checkpoint_model and checkpoint_model[key].shape != model.state_dict()[key].shape:
+            print("Removing key %s from pretrained checkpoint" % key)
+            checkpoint_model.pop(key)
+
+    # new_dict = OrderedDict()
+    # for key in checkpoint_model.keys():
+    #     if key.startswith('backbone.'):
+    #         new_dict[key[9:]] = checkpoint_model[key]
+    #     elif key.startswith('encoder.'):
+    #         if use_flash_attn and 'attn.qkv' in key:
+    #             new_dict[key[8:].replace('attn.qkv', 'attn.Wqkv')] = checkpoint_model[key]
+    #         elif use_flash_attn and 'attn.q_bias' in key:
+    #             q_bias = checkpoint_model[key]
+    #             v_bias = checkpoint_model[key.replace('attn.q_bias', 'attn.v_bias')]
+    #             new_dict[key[8:].replace('attn.q_bias', 'attn.Wqkv.bias')] = torch.cat(
+    #                 (q_bias, torch.zeros_like(v_bias), v_bias))
+    #         elif use_flash_attn and 'attn.v_bias' in key:
+    #             continue
+    #         elif use_flash_attn and 'attn.proj' in key:
+    #             new_dict[key[8:].replace('attn.proj', 'attn.out_proj')] = checkpoint_model[key]
+    #         else:
+    #             new_dict[key[8:]] = checkpoint_model[key]
+    #     else:
+    #         if use_flash_attn and 'attn.qkv' in key:
+    #             new_dict[key.replace('attn.qkv', 'attn.Wqkv')] = checkpoint_model[key]
+    #         elif use_flash_attn and 'attn.q_bias' in key:
+    #             q_bias = checkpoint_model[key]
+    #             v_bias = checkpoint_model[key.replace('attn.q_bias', 'attn.v_bias')]
+    #             new_dict[key.replace('attn.q_bias', 'attn.Wqkv.bias')] = torch.cat(
+    #                 (q_bias, torch.zeros_like(v_bias), v_bias))
+    #         elif use_flash_attn and 'attn.v_bias' in key:
+    #             continue
+    #         elif use_flash_attn and 'attn.proj' in key:
+    #             new_dict[key.replace('attn.proj', 'attn.out_proj')] = checkpoint_model[key]
+    #         else:
+    #             new_dict[key] = checkpoint_model[key]
+    checkpoint_model = new_dict
+
+    if 'pos_embed' in checkpoint_model:
+        new_pos_embed = interpolate_pos_embed(checkpoint_model['pos_embed'], model, num_frames=16)
+        checkpoint_model['pos_embed'] = new_pos_embed
+
+    missing_keys, unexpected_keys = model.load_state_dict(checkpoint_model, strict=False)
+    print("missing_keys: ", missing_keys)
+    print("unexpected_keys: ", unexpected_keys)
+    logit_scale = checkpoint_model['logit_scale']
+    
+    # delet unneccessary parameters
+    del checkpoint, checkpoint_model
+    
+    # return the logit_scale
+    return logit_scale
+
+def FRILSCLIP_VITB16(
+    freeze_temperature=False,
+    use_grad_checkpointing=False,
+    use_bidirectional_lm=False,
+    context_length=77,
+    patch_dropout=0.,
+    drop_path_rate=0.,
+    num_frames=1,
+    use_fast_conv1=False,
+    use_flash_attn=False,
+    project_embed_dim=512,
+    pretrain_zoo='openai',
+    pretrain_path=None,
+    text_pretrain_path=None,
+    **kwargs
+):
+    # vision_model = FRILSVisionTransformer(
+    #     patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+    #     norm_layer=partial(nn.LayerNorm, eps=1e-6), 
+    #     num_classes=0,
+    #     fc_drop_rate = 0,
+    #     drop_rate = 0,
+    #     drop_path_rate=0.1,
+    #     attn_drop_rate=0,
+    #     use_flash_attn=use_flash_attn,
+    #     use_checkpoint=use_grad_checkpointing,
+    #     channel_last=False,
+    #     text_embed_dim=project_embed_dim,
+    # )
+    # initiate the visual model
+    if pretrain_zoo == "frils":
+        vision_model = FRILS_VITB16(
+            pretrained=False,
+            drop_path_rate=0.1,
+            decoder_depth=6,
+            use_flash_attn_at_encoder=use_flash_attn,
+            use_flash_attn_at_decoder=use_flash_attn,
+            use_checkpoint=use_grad_checkpointing,
+            channel_last=False,
+            text_embed_dim=project_embed_dim,
+        )
+    else:
+        vision_model = timm.create_model('vit_base_patch16_224', num_classes=0)
+        enable_grad_checkpointing(vision_model, use_grad_checkpointing)
+
+    # initiate the text model
+    text_model = TextTransformer(context_length=context_length, vocab_size=49408, width=project_embed_dim, heads=8, layers=12, output_dim=project_embed_dim, causal_mask=not use_bidirectional_lm)
+    enable_grad_checkpointing(text_model, use_grad_checkpointing)
+    
+    # initiate the CLIP model
+    model = CLIP(embed_dim=project_embed_dim, vision_model=vision_model, text_model=text_model, freeze_temperature=freeze_temperature)
+
+    if pretrain_zoo == "openai":
+        print("=> loading openai model")
+        clip_model, _ = clip.load('ViT-B/16', device='cpu')
+        remapped_state_dict = remap_keys_from_open_clip_to_vit(
+            clip_model.state_dict(),
+            use_fast_conv1=use_fast_conv1,
+            use_flash_attn=use_flash_attn,
+        )
+        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        print("missing_keys: ", missing_keys)
+        print("unexpected_keys: ", unexpected_keys)
+    elif pretrain_zoo == "open_clip":
+        assert pretrain_path is not None
+        state_dict = torch.load(pretrain_path)
+        print("=> loading open_clip model")
+        remapped_state_dict = remap_keys_from_open_clip_to_vit(state_dict, use_fast_conv1=use_fast_conv1, use_flash_attn=use_flash_attn)
+        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        print("missing_keys: ", missing_keys)
+        print("unexpected_keys: ", unexpected_keys)
+    elif pretrain_zoo == "frils":
+        assert pretrain_path is not None
+        print("=> loading frils model")
+        # update the visual state_dict
+        logit_scale = load_frils_visual_model(model.visual, pretrain_path, use_flash_attn)
+        # update the logit_scale in CLIP
+        model.logit_scale = nn.Parameter(torch.tensor(logit_scale))
+        
+        # pre-initialize the text model with the openai model
+        clip_model, _ = clip.load('ViT-B/16', device='cpu')
+        # clip_model, _ = clip.load("ViT-L/14", device='cpu')
+        missing_keys, unexpected_keys = model.textual.load_state_dict(clip_model.state_dict(), strict=False)
+        del clip_model
+        
+        # update the text state_dict with the fine-tuned one
+        text_state_dict = torch.load(text_pretrain_path)['model']
+        # now remove the unwanted keys:
+        if "module.prompt_learner.token_prefix" in text_state_dict:
+            del text_state_dict["module.prompt_learner.token_prefix"]
+
+        if "module.prompt_learner.token_suffix" in text_state_dict:
+            del text_state_dict["module.prompt_learner.token_suffix"]
+
+        if "module.prompt_learner.complete_text_embeddings" in text_state_dict:
+            del text_state_dict["module.prompt_learner.complete_text_embeddings"]
+        # remove the prefix "module."
+        text_state_dict = {k.replace("module.", ""): v for k, v in text_state_dict.items()}
+        # remove the prefix "text_encoder."
+        text_state_dict = {k.replace("text_encoder.", ""): v for k, v in text_state_dict.items()}
+        missing_keys, unexpected_keys = model.textual.load_state_dict(text_state_dict, strict=False)
+        print("missing_keys: ", missing_keys)
+        print("unexpected_keys: ", unexpected_keys)
+    else:
+        raise NotImplementedError
     return model
