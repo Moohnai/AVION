@@ -149,6 +149,7 @@ def get_args_parser():
     parser.add_argument('--betas', default=(0.9, 0.999), nargs=2, type=float)
     parser.add_argument('--eps', default=1e-8, type=float)
     parser.add_argument('--eval-freq', default=1, type=int)
+    parser.add_argument('--save_freq', default=1, type=int)
     parser.add_argument('--disable-amp', action='store_true', help='disable mixed-precision training (requires more memory and compute)')
     parser.add_argument('--grad-clip-norm', default=None, type=float)
     # system
@@ -210,7 +211,7 @@ def main(args):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], bucket_cap_mb=200, find_unused_parameters=True)
 
     if 'ek100' in args.dataset:
         criterion = MaxMarginRankingLoss(
@@ -438,7 +439,7 @@ def main(args):
     print(args)
 
     print("=> beginning training")
-    best_acc1 = 0.
+    best_map = 0.
     for epoch in range(args.start_epoch, args.epochs):
 
         # train for one epoch
@@ -450,32 +451,51 @@ def main(args):
             wandb_dict["train_epoch_"+key] = value
         wandb.log(wandb_dict, step=epoch)
 
-        if (epoch + 1) % args.eval_freq != 0:
-            continue
+        if (epoch + 1) % args.save_freq == 0:
+            print("=> saving checkpoint")
+            if args.use_zero:
+                print('consolidated on rank {} because of ZeRO'.format(args.rank))
+                optimizer.consolidate_state_dict(to=args.rank)
+            dist_utils.save_on_master({
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'optimizer' : optimizer.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'args': args,
+                }, False, args.output_dir)
+            
+        if (epoch + 1) % args.eval_freq == 0:
+            print("=> validate")
+            if args.dataset == 'charades_ego':
+                val_stats = validate_cls(val_loader, ['{}'], labels, model, tokenizer, args)
+            else:
+                val_stats = validate_mir(val_loader, val_transform_gpu, normalize, model, criterion, args)
 
-        if args.dataset == 'charades_ego':
-            val_stats = validate_cls(val_loader, ['{}'], labels, model, tokenizer, args)
-        else:
-            val_stats = validate_mir(val_loader, val_transform_gpu, normalize, model, criterion, args)
-
-        # wandb log
-        wandb_dict = {}
-        for key, value in val_stats.items():
-            wandb_dict["val_epoch_"+key] = value
-        wandb.log(wandb_dict, step=epoch)
-
-        print("=> saving checkpoint")
-        if args.use_zero:
-            print('consolidated on rank {} because of ZeRO'.format(args.rank))
-            optimizer.consolidate_state_dict(0)
-        dist_utils.save_on_master({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'optimizer' : optimizer.state_dict() if dist_utils.is_main_process() else None,
-                'scaler': scaler.state_dict(),
-                # 'best_acc1': best_acc1,
-                'args': args,
-            }, args.output_dir)
+            # wandb log
+            wandb_dict = {}
+            for key, value in val_stats.items():
+                wandb_dict["val_epoch_"+key] = value
+            wandb.log(wandb_dict, step=epoch)
+            
+            # wandb log
+            wandb_dict = {}
+            for key, value in val_stats.items():
+                wandb_dict["val_epoch_"+key] = value
+            wandb.log(wandb_dict, step=epoch)
+        
+            if best_map < val_stats['mAP']:
+                best_map = val_stats['mAP']
+                if args.use_zero:
+                    print('consolidated on rank {} because of ZeRO'.format(args.rank))
+                    optimizer.consolidate_state_dict(to=args.rank)
+                dist_utils.save_on_master({
+                        'epoch': epoch + 1,
+                        'state_dict': model.state_dict(),
+                        'optimizer' : optimizer.state_dict(),
+                        'scaler': scaler.state_dict(),
+                        'best_map': best_map,
+                        'args': args,
+                    }, True, args.output_dir)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in val_stats.items()},
@@ -524,10 +544,17 @@ def train(train_loader, transform_gpu, normalize, model, criterion, optimizer, s
             if lr_schedule is not None:
                 param_group['lr'] = lr_schedule[it]
 
-        inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
-        # normalize videos
-        inputs[0] = normalize(inputs[0])
-        relevancies = inputs.pop()  # loader will a "relevancy" variable; we need it for ek100_mir
+        videos = inputs[0].cuda(args.gpu, non_blocking=True)
+        videos = normalize(videos)
+        texts = inputs[1].cuda(args.gpu, non_blocking=True)
+        if args.dataset != 'charades_ego':
+            relevancies = inputs[2].cuda(args.gpu, non_blocking=True)
+
+        # inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
+        # # normalize videos
+        # inputs[0] = normalize(inputs[0])
+        # relevancies = inputs.pop()  # loader will a "relevancy" variable; we need it for ek100_mir
+        
         optimizer.zero_grad()
 
         tic = time.time()
@@ -535,9 +562,9 @@ def train(train_loader, transform_gpu, normalize, model, criterion, optimizer, s
         if args.update_freq == 1:
             with amp.autocast(enabled=not args.disable_amp):
                 if args.fused_decode_crop and len(transform_gpu) > 0:
-                    inputs[0] = inputs[0].permute(0, 4, 1, 2, 3)
-                    inputs[0] = transform_gpu(inputs[0])
-                image_features, text_features, logit_scale = model(*inputs)
+                    videos = videos.permute(0, 4, 1, 2, 3)
+                    videos = transform_gpu(videos)
+                image_features, text_features, logit_scale = model(videos, texts)
                 if args.dataset == 'charades_ego':
                     loss_dict = criterion(image_features, text_features, logit_scale)
                 else:
@@ -549,7 +576,7 @@ def train(train_loader, transform_gpu, normalize, model, criterion, optimizer, s
             with torch.no_grad():
                 with amp.autocast(enabled=not args.disable_amp):
                     # chunk_image_features, chunk_text_features, _ = model(images, texts)
-                    chunk_image_features, chunk_text_features, _ = model(*inputs)
+                    chunk_image_features, chunk_text_features, _ = model(inputs[0], inputs[1])
                 accum_image_features.append(chunk_image_features)
                 accum_text_features.append(chunk_text_features)
 
@@ -657,7 +684,7 @@ def validate_mir(val_loader, transform_gpu, normalize, model, criterion, args):
                 if args.fused_decode_crop and len(transform_gpu) > 0:
                     inputs[0] = inputs[0].permute(0, 4, 1, 2, 3)
                     inputs[0] = transform_gpu(inputs[0])
-                image_features, text_features, logit_scale = model(*inputs)
+                image_features, text_features, logit_scale = model(inputs[0], inputs[1])
                 gathered_image_features = [torch.zeros_like(image_features) for _ in range(args.world_size)]
                 gathered_text_features = [torch.zeros_like(text_features) for _ in range(args.world_size)]
                 if args.distributed:
@@ -713,7 +740,7 @@ def validate_mir(val_loader, transform_gpu, normalize, model, criterion, args):
     vis_nDCG, txt_nDCG, avg_nDCG = get_nDCG(similarity_matrix, rel_matrix)
     print('nDCG: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}'.format(vis_nDCG, txt_nDCG, avg_nDCG))
     return {**{k: v.avg for k, v in metrics.items()},
-            'vis_map': vis_map, 'txt_map': txt_map, 'avg_map': avg_map,
+            'vis_map': vis_map, 'txt_map': txt_map, 'avg_map': avg_map, 'mAP':avg_map,
             'vis_ndcg': vis_nDCG, 'txt_ndcg': txt_nDCG, 'avg_ndcg': avg_nDCG}
 
 
