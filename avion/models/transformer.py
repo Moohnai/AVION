@@ -179,7 +179,7 @@ class Transformer(nn.Module):
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
         for r in self.resblocks:
             if self.grad_checkpointing and not torch.jit.is_scripting():
-                x = checkpoint(r, x, attn_mask)
+                x = checkpoint(r, x, attn_mask, use_reentrant=False)
             else:
                 x = r(x, attn_mask=attn_mask)
         return x
