@@ -116,11 +116,11 @@ DICT = {
             'f1score': 1.3,
         },
         "FR_clip": {
-            'acc1': 1.27,
-            'acc5': 1.12,
-            'verb_acc1': 1.065,
-            'noun_acc1': 1.3,
-            'f1score': 1.2,
+            'acc1': 1.32,
+            'acc5': 1.17,
+            'verb_acc1': 1.10,
+            'noun_acc1': 1.34,
+            'f1score': 1.24,
         },
     },
 }
