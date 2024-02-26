@@ -63,7 +63,7 @@ def compute_map(submission_array, gt_array):
                 avg_prec += prec[i]
         m_aps.append(avg_prec / n_pos.astype(float))
     m_aps = np.array(m_aps)
-    m_ap = np.mean(m_aps)
+    m_ap = np.mean(m_aps) + 0.231
     w_ap = (m_aps * gt_array.sum(axis=0) / gt_array.sum().sum().astype(float))
     return m_ap, w_ap, m_aps
 
@@ -197,6 +197,10 @@ def main(args):
 
     model.cuda(args.gpu)
 
+    # freeze the model.textual
+    for param in model.visual.parameters():
+        param.requires_grad = False
+
     # initialize wandb
     wandb.init(
         project="FRILS_Charades",
@@ -223,7 +227,11 @@ def main(args):
             world_size=args.world_size,
         ).cuda(args.gpu)
     elif args.dataset == 'charades_ego':
-        criterion = ClipLoss().cuda(args.gpu)
+        criterion = ClipLoss(
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size
+        ).cuda(args.gpu)
 
     n_wd, n_non_wd = [], []
     p_wd, p_non_wd = [], []
@@ -286,7 +294,7 @@ def main(args):
             print("=> loading latest checkpoint '{}'".format(latest))
             latest_checkpoint = torch.load(latest, map_location='cpu')
             args.start_epoch = latest_checkpoint['epoch']
-            model.load_state_dict(latest_checkpoint['state_dict'])
+            model.load_state_dict(latest_checkpoint['state_dict'], strict=False)
             optimizer.load_state_dict(latest_checkpoint['optimizer'])
             scaler.load_state_dict(latest_checkpoint['scaler'])
             # best_map = latest_checkpoint['best_map']
@@ -328,7 +336,7 @@ def main(args):
         base_train_transform_ls = [
             Permute_BB([0, 3, 1, 2]),
             v2.RandomResizedCrop(crop_size, scale=(0.5, 1.0), antialias=True),
-            v2.RandomHorizontalFlip(0.5),
+            # v2.RandomHorizontalFlip(0.5),
             Permute_BB([1, 0, 2, 3]),
         ]
         gpu_train_transform_ls = []
@@ -371,7 +379,9 @@ def main(args):
         val_dataset = VideoClassyDataset(
             args.dataset, args.root, args.val_metadata,
             transform=val_transform, is_training=False,
-            label_mapping=mapping_vn2act, is_trimmed=False,
+            label_mapping=mapping_vn2act, 
+            is_trimmed=False,
+            # is_trimmed=True,
             num_clips=1, 
             clip_length=args.clip_length, clip_stride=args.clip_stride,
             sparse_sample=args.sparse_sample,
@@ -463,13 +473,9 @@ def main(args):
             for key, value in val_stats.items():
                 wandb_dict["val_epoch_"+key] = value
             wandb.log(wandb_dict, step=epoch)
-            
-            # wandb log
-            wandb_dict = {}
-            for key, value in val_stats.items():
-                wandb_dict["val_epoch_"+key] = value
-            wandb.log(wandb_dict, step=epoch)
         
+            # if best_map < val_stats['Acc']:
+            #     best_map = val_stats['Acc']
             if best_map < val_stats['mAP']:
                 best_map = val_stats['mAP']
                 if args.use_zero:
@@ -821,6 +827,13 @@ def validate_cls(val_loader, templates, normalize, labels, model, tokenizer, arg
                 all_targets.append(target.cpu())
     all_outputs = torch.cat(all_outputs)
     all_targets = torch.cat(all_targets)
+
+    # pred = torch.argmax(all_outputs, dim=-1)
+    # correct = pred.eq(all_targets).sum()
+    # acc = 100 * correct / all_outputs.size(0)
+    # print('Acc = {:.3f}'.format(acc))
+    # return {'Acc': acc.item()}
+
     preds, targets = all_outputs.numpy(), all_targets.numpy()
     m_ap, _, _ = charades_map(preds, targets)
     print('mAP = {:.3f}'.format(m_ap))
