@@ -264,7 +264,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                                 fps = fps_dict[osp.join(self.root, vid_path)]
                                 start_frame = int(np.round(fps * start_timestamp))
                                 end_frame = int(np.ceil(fps * end_timestamp))
-                                self.samples.append((vid_path, start_frame, end_frame, action, script))
+                                self.samples.append((vid_path, start_frame, end_frame, action))
                         else:
                             if not row[9]:
                                 action_list = []
