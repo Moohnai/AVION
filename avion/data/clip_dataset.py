@@ -221,7 +221,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                     raise ValueError('{} should contain either "train" or "test"!'.format(metadata))
                 self.relevancy = .1
 
-        elif self.dataset == 'egtea':
+        elif self.dataset == 'EGTEA':
             video_list = glob.glob(osp.join(self.root, '*/*'))
             len_dict = {video: len(decord.VideoReader(video)) for video in video_list}
 
@@ -356,7 +356,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                                   jitter=is_training)
             return frames, '{}:{}'.format(verb, noun), frame_ids, idx
         
-        elif self.dataset == 'egtea':
+        elif self.dataset == 'EGTEA':
             vid_path, start_frame, end_frame, sentence = self.samples[i]
             if is_training:
                 assert num_clips == 1

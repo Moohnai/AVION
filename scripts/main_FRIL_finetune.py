@@ -23,6 +23,9 @@ from timm.utils import ModelEmaV2, accuracy, get_state_dict
 from sklearn.metrics import f1_score
 import wandb
 
+import torchvision
+from pytorchvideo.transforms import RandAugment, Normalize
+
 # find the path to the current file
 current_path = os.path.dirname(os.path.realpath(__file__))
 parent_path = os.path.dirname(current_path)
@@ -30,7 +33,9 @@ parent_path = os.path.dirname(current_path)
 import sys
 sys.path.append(parent_path)
 
+from avion.data.transforms import Permute, TemporalCrop, SpatialCrop
 from avion.data.classification_dataset import VideoClsDataset_FRIL, multiple_samples_collate
+from avion.data.clip_dataset import VideoClassyDataset
 import avion.models.model_FRIL as model_FRIL
 from avion.optim.layer_decay import LayerDecayValueAssigner
 from avion.optim.lion import Lion
@@ -43,18 +48,34 @@ from avion.utils.evaluation_ek100cls import get_marginal_indexes, get_mean_accur
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='FRIL fine-tune', add_help=False)
-    parser.add_argument('--dataset', default='ek100_cls', type=str, choices=['ek100_cls'])
+    parser.add_argument('--dataset', default='EGTEA', type=str, choices=['ek100_cls', 'EGTEA'])
     parser.add_argument('--root',
-                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
+                        default=os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
+                        choices= [
+                            os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
+                            os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
+                        ],
                         type=str, help='path to train dataset root')
     parser.add_argument('--root-val',
-                        default=os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
+                        default=os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
+                        choices= [
+                            os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
+                            os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
+                        ],
                         type=str, help='path to val dataset root')
     parser.add_argument('--train-metadata',
-                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
+                        default=os.path.join(parent_path, 'datasets/EGTEA/train_split1.txt'),
+                        choices=[
+                            os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
+                            os.path.join(parent_path, 'datasets/EGTEA/train_split1.txt')
+                        ],
                         type=str, help='metadata for train split')
     parser.add_argument('--val-metadata',
-                        default=os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
+                        default=os.path.join(parent_path, 'datasets/EGTEA/test_split1.txt'),
+                        choices=[
+                            os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
+                            os.path.join(parent_path, 'datasets/EGTEA/test_split1.txt')
+                        ],
                         type=str, help='metadata for val split')
     parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/finetune_FRILS/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
@@ -116,7 +137,7 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='Finetune_FR_CLIP_FRILS_800__decoder_head=6_all_EK', type=str)
+    parser.add_argument('--run_name', default='Finetune_FR_CLIP_FRILS_800__decoder_head=6_all_EGTEA', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -188,7 +209,7 @@ def main(args):
 
     # initialize wandb
     wandb.init(
-        project="FRILS_EK100",
+        project="FRILS_EGTEA",
         group="finetune",
         name=args.run_name,
         config=args,
@@ -399,32 +420,77 @@ def main(args):
         args.mapping_act2v = {i: int(vn.split(':')[0]) for (vn, i) in mapping_vn2act.items()}
         args.mapping_act2n = {i: int(vn.split(':')[1]) for (vn, i) in mapping_vn2act.items()}
         args.actions = pd.DataFrame.from_dict({'verb': args.mapping_act2v.values(), 'noun': args.mapping_act2n.values()})
+    if args.dataset == "EGTEA":
+        _, mapping_vn2act = generate_label_map(args.dataset, root=parent_path)
     num_clips_at_val = args.num_clips
     args.num_clips = 1
 
-    train_dataset = VideoClsDataset_FRIL(
-        args.root, args.train_metadata, mode='train', 
-        clip_length=args.clip_length, clip_stride=args.clip_stride,
-        args=args,
-    )
+    if args.dataset == "EGTEA":
+        crop_size = 224 if '336PX' not in args.model else 336
+        transforms_list = [
+            Permute([3, 0, 1, 2]),    # T H W C -> C T H W
+            torchvision.transforms.RandomResizedCrop(crop_size, scale=(0.5, 1.0), antialias=True),
+            torchvision.transforms.RandomHorizontalFlip(p=0.5),
+        ]
+        transforms_list.append(Normalize(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]))
+        train_transform = torchvision.transforms.Compose(transforms_list)
 
-    val_dataset = VideoClsDataset_FRIL(
-        args.root_val, args.val_metadata, mode='validation',
-        clip_length=args.clip_length, clip_stride=args.clip_stride,
-        args=args,
-    )
+        val_transform = torchvision.transforms.Compose([
+                Permute([3, 0, 1, 2]),    # T H W C -> C T H W
+                torchvision.transforms.Resize(crop_size, antialias=True),
+                torchvision.transforms.CenterCrop(crop_size),
+                Normalize(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]),
+                TemporalCrop(frames_per_clip=args.clip_length, stride=args.clip_length),
+                SpatialCrop(crop_size=crop_size, num_crops=args.test_num_crop),
+            ])
+    
+        train_dataset = VideoClassyDataset(
+                args.dataset, args.root, args.train_metadata, train_transform,
+                is_training=True, label_mapping=mapping_vn2act,
+                num_clips=args.num_clips,
+                chunk_len=args.video_chunk_length,
+                clip_length=args.clip_length, clip_stride=args.clip_stride,
+                threads=args.decode_threads,
+                rrc_params=(crop_size, (0.5, 1.0)),
+            )
+        
+        val_dataset = VideoClassyDataset(
+                args.dataset, args.root_val, args.val_metadata, val_transform,
+                is_training=False, label_mapping=mapping_vn2act,
+                num_clips=num_clips_at_val,
+                chunk_len=args.video_chunk_length,
+                clip_length=args.clip_length, clip_stride=args.clip_stride,
+                threads=args.decode_threads,
+                rrc_params=(crop_size, (0.5, 1.0)),
+            )
+        
+        test_dataset = val_dataset
 
-    test_dataset = VideoClsDataset_FRIL(
-        args.root_val, args.val_metadata, mode='test',
-        clip_length=args.clip_length, clip_stride=args.clip_stride,
-        test_num_segment=args.test_num_segment, test_num_crop=args.test_num_crop,
-        args=args,
-    )
+    else:
+        train_dataset = VideoClsDataset_FRIL(
+            args.root, args.train_metadata, mode='train', 
+            clip_length=args.clip_length, clip_stride=args.clip_stride,
+            args=args,
+        )
+
+        val_dataset = VideoClsDataset_FRIL(
+            args.root_val, args.val_metadata, mode='validation',
+            clip_length=args.clip_length, clip_stride=args.clip_stride,
+            args=args,
+        )
+
+        test_dataset = VideoClsDataset_FRIL(
+            args.root_val, args.val_metadata, mode='test',
+            clip_length=args.clip_length, clip_stride=args.clip_stride,
+            test_num_segment=args.test_num_segment, test_num_crop=args.test_num_crop,
+            args=args,
+        )
 
     ###### update train_dataset, val_dataset, and test_dataset with args
-    train_dataset.label_mapping = args.label_mapping
-    val_dataset.label_mapping = args.label_mapping
-    test_dataset.label_mapping = args.label_mapping
+    if args.dataset == 'ek100_cls':
+        train_dataset.label_mapping = args.label_mapping
+        val_dataset.label_mapping = args.label_mapping
+        test_dataset.label_mapping = args.label_mapping
     ######
 
     if args.distributed:
@@ -654,6 +720,9 @@ def train(train_loader, model, criterion, optimizer,
             acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
             metrics['Verb Acc@1'].update(acc1_verb.item(), videos.size(0))
             metrics['Noun Acc@1'].update(acc1_noun.item(), videos.size(0))
+        else:
+            metrics['Verb Acc@1'].update(0, videos.size(0))
+            metrics['Noun Acc@1'].update(0, videos.size(0))
 
         mem.update(torch.cuda.max_memory_allocated() // 1e9)
 
@@ -687,37 +756,73 @@ def validate(val_loader, model, epoch, args):
         for data_iter, inputs in enumerate(val_loader):
             data_time.update(time.time() - end)
 
-            videos = inputs[0].cuda(args.gpu, non_blocking=True)
-            targets = inputs[1].cuda(args.gpu, non_blocking=True)
+            if isinstance(inputs[0], list):
+                logit_allcrops = []
+                for crop in inputs[0]:
+                    videos = crop.cuda(args.gpu, non_blocking=True)
+                    
 
-            tic = time.time()
-            # compute output
-            with amp.autocast(enabled=not args.disable_amp):
-                outputs = model(videos)
-                loss = criterion(outputs, targets)
+                    tic = time.time()
+                    # compute output
+                    with amp.autocast(enabled=not args.disable_amp):
+                        outputs = model(videos)
+                        
 
-            outputs = torch.softmax(outputs, dim=1)
-            acc1, acc5 = accuracy(outputs, targets, topk=(1, 5))
-            f1score = f1_score(targets.detach().cpu(), torch.argmax(outputs, 1).detach().cpu(), average="micro")
-            metrics['Acc@1'].update(acc1.item(), videos.size(0))
-            metrics['Acc@5'].update(acc5.item(), videos.size(0))
-            if args.dataset == 'ek100_cls':
-                vi = get_marginal_indexes(args.actions, 'verb')
-                ni = get_marginal_indexes(args.actions, 'noun')
-                verb_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), vi)).cuda(args.gpu, non_blocking=True)
-                noun_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), ni)).cuda(args.gpu, non_blocking=True)
-                target_to_verb = torch.tensor([args.mapping_act2v[a] for a in targets.tolist()]).cuda(args.gpu, non_blocking=True)
-                target_to_noun = torch.tensor([args.mapping_act2n[a] for a in targets.tolist()]).cuda(args.gpu, non_blocking=True)
-                acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
-                acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
-                metrics['Verb Acc@1'].update(acc1_verb.item(), videos.size(0))
-                metrics['Noun Acc@1'].update(acc1_noun.item(), videos.size(0))
+                    logit_allcrops.append(outputs)
 
-            # torch.cuda.empty_cache()
-            model_time.update(time.time() - tic)
+                    # torch.cuda.empty_cache()
+                    model_time.update(time.time() - tic)
 
-            metrics['loss'].update(loss.item(), args.batch_size)
-            metrics['f1_score'].update(f1score, args.batch_size)
+                logit_allcrops = torch.stack(logit_allcrops, dim=0)
+                logit = torch.mean(logit_allcrops, dim=0)
+                logit = torch.softmax(logit, dim=1)
+                targets = inputs[1].cuda(args.gpu, non_blocking=True)
+                loss = criterion(logit, targets)
+                acc1, acc5 = accuracy(logit, targets, topk=(1, 5))
+                f1score = f1_score(targets.detach().cpu(), torch.argmax(logit, 1).detach().cpu(), average="micro")
+                metrics['Acc@1'].update(acc1.item(), videos.size(0))
+                metrics['Acc@5'].update(acc5.item(), videos.size(0))
+                metrics['loss'].update(loss.item(), args.batch_size)
+                metrics['f1_score'].update(f1score, args.batch_size)
+                metrics['Verb Acc@1'].update(0, videos.size(0))
+                metrics['Noun Acc@1'].update(0, videos.size(0))
+
+            else:
+
+                videos = inputs[0].cuda(args.gpu, non_blocking=True)
+                targets = inputs[1].cuda(args.gpu, non_blocking=True)
+
+                tic = time.time()
+                # compute output
+                with amp.autocast(enabled=not args.disable_amp):
+                    outputs = model(videos)
+                    loss = criterion(outputs, targets)
+
+                outputs = torch.softmax(outputs, dim=1)
+                acc1, acc5 = accuracy(outputs, targets, topk=(1, 5))
+                f1score = f1_score(targets.detach().cpu(), torch.argmax(outputs, 1).detach().cpu(), average="micro")
+                metrics['Acc@1'].update(acc1.item(), videos.size(0))
+                metrics['Acc@5'].update(acc5.item(), videos.size(0))
+                if args.dataset == 'ek100_cls':
+                    vi = get_marginal_indexes(args.actions, 'verb')
+                    ni = get_marginal_indexes(args.actions, 'noun')
+                    verb_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), vi)).cuda(args.gpu, non_blocking=True)
+                    noun_scores = torch.tensor(marginalize(outputs.detach().cpu().numpy(), ni)).cuda(args.gpu, non_blocking=True)
+                    target_to_verb = torch.tensor([args.mapping_act2v[a] for a in targets.tolist()]).cuda(args.gpu, non_blocking=True)
+                    target_to_noun = torch.tensor([args.mapping_act2n[a] for a in targets.tolist()]).cuda(args.gpu, non_blocking=True)
+                    acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
+                    acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
+                    metrics['Verb Acc@1'].update(acc1_verb.item(), videos.size(0))
+                    metrics['Noun Acc@1'].update(acc1_noun.item(), videos.size(0))
+                else:
+                    metrics['Verb Acc@1'].update(0, videos.size(0))
+                    metrics['Noun Acc@1'].update(0, videos.size(0))
+
+                # torch.cuda.empty_cache()
+                model_time.update(time.time() - tic)
+
+                metrics['loss'].update(loss.item(), args.batch_size)
+                metrics['f1_score'].update(f1score, args.batch_size)
 
             # measure elapsed time
             batch_time.update(time.time() - end)

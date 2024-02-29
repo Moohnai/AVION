@@ -115,7 +115,7 @@ def read_metadata(metadata_fname, root=None, args=None, mode='train'):
                 assert len(line_info) == 3
                 samples.append((line_info[0], line_info[1], int(line_info[2]), id))
 
-    else:
+    else: 
         with open(metadata_fname) as split_f:
             data = split_f.readlines()
             for line in data:

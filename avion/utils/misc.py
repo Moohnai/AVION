@@ -84,10 +84,10 @@ def generate_label_map(dataset, root=''):
                 labels.append(narration)
         mapping_vn2act = {vn: i for i, vn in enumerate(vn_list)}
         print(labels[:5])
-    elif dataset == 'egtea':
+    elif dataset.lower() == 'egtea':
         print("=> preprocessing egtea action label space")
         labels = []
-        with open('datasets/EGTEA/action_idx.txt') as f:
+        with open(os.path.join(root, 'datasets/EGTEA/action_idx.txt')) as f:
             for row in f:
                 row = row.strip()
                 narration = ' '.join(row.split(' ')[:-1])

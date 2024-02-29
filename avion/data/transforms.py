@@ -53,6 +53,29 @@ class Permute_BB(nn.Module):
         if isinstance(frames, tuple):
             frames, bbox = frames
         return frames.permute(self.ordering), bbox
+    
+class TemporalCrop(nn.Module):
+    """
+    Convert the video into smaller clips temporally.
+    """
+
+    def __init__(
+        self, frames_per_clip: int = 8, stride: int = 8, frame_stride: int = 1
+    ):
+        super().__init__()
+        self.frames = frames_per_clip
+        self.stride = stride
+        self.frame_stride = frame_stride
+
+    def forward(self, video):
+        assert video.ndim == 4, "Must be (C, T, H, W)"
+        res = []
+        for start in range(
+            0, video.size(1) - (self.frames * self.frame_stride) + 1, self.stride
+        ):
+            end = start + (self.frames) * self.frame_stride
+            res.append(video[:, start: end: self.frame_stride, ...])
+        return res
 
 class AdaptiveTemporalCrop(nn.Module):
     """
