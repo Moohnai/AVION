@@ -471,7 +471,7 @@ def main(args):
         val_dataset = VideoClassyDataset(
                 args.dataset, args.root_val, args.val_metadata, val_transform,
                 is_training=False, label_mapping=mapping_vn2act,
-                num_clips=num_clips_at_val,
+                num_clips=args.num_clips,
                 chunk_len=args.video_chunk_length,
                 clip_length=args.clip_length, clip_stride=args.clip_stride,
                 threads=args.decode_threads,
@@ -517,12 +517,12 @@ def main(args):
             clip_length=args.clip_length, clip_stride=args.clip_stride,
             threads=args.decode_threads,
             fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-            fast_msc=args.fused_decode_crop, msc_params=(224, ),
+            msc_params=(224, ),
             fast_cc=False, cc_params=(224, ),
             hflip_prob=0.5, vflip_prob=0.,
             mask_type='later',  # do masking in batches
-            window_size=args.window_size, mask_ratio=args.mask_ratio,
             verbose=args.verbose,
+            args=args,
         )
 
         val_dataset = KineticsDataset(
@@ -530,12 +530,12 @@ def main(args):
             clip_length=args.clip_length, clip_stride=args.clip_stride,
             threads=args.decode_threads,
             fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-            fast_msc=args.fused_decode_crop, msc_params=(224, ),
+            msc_params=(224, ),
             fast_cc=False, cc_params=(224, ),
             hflip_prob=0.5, vflip_prob=0.,
             mask_type='later',  # do masking in batches
-            window_size=args.window_size, mask_ratio=args.mask_ratio,
             verbose=args.verbose,
+            args=args,
         )
 
         test_dataset = KineticsDataset(
@@ -543,12 +543,12 @@ def main(args):
             clip_length=args.clip_length, clip_stride=args.clip_stride,
             threads=args.decode_threads,
             fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-            fast_msc=args.fused_decode_crop, msc_params=(224, ),
+            msc_params=(224, ),
             fast_cc=False, cc_params=(224, ),
             hflip_prob=0.5, vflip_prob=0.,
             mask_type='later',  # do masking in batches
-            window_size=args.window_size, mask_ratio=args.mask_ratio,
             verbose=args.verbose,
+            args=args,
         )
 
     else:
