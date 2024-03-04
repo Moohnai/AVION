@@ -75,7 +75,7 @@ def generate_label_map(dataset, root=''):
         print("=> preprocessing charades_ego action label space")
         vn_list = []
         labels = []
-        with open('datasets/CharadesEgo/CharadesEgo/Charades_v1_classes.txt') as f:
+        with open(os.path.join(root, 'datasets/CharadesEgo/CharadesEgo/Charades_v1_classes.txt')) as f:
             csv_reader = csv.reader(f)
             for row in csv_reader:
                 vn = row[0][:4]
@@ -84,10 +84,10 @@ def generate_label_map(dataset, root=''):
                 labels.append(narration)
         mapping_vn2act = {vn: i for i, vn in enumerate(vn_list)}
         print(labels[:5])
-    elif dataset == 'egtea':
+    elif dataset.lower() == 'egtea':
         print("=> preprocessing egtea action label space")
         labels = []
-        with open('datasets/EGTEA/action_idx.txt') as f:
+        with open(os.path.join(root, 'datasets/EGTEA/action_idx.txt')) as f:
             for row in f:
                 row = row.strip()
                 narration = ' '.join(row.split(' ')[:-1])
@@ -116,11 +116,34 @@ DICT = {
             'f1score': 1.3,
         },
         "FR_clip": {
+            'acc1': 1.32,
+            'acc5': 1.17,
+            'verb_acc1': 1.10,
+            'noun_acc1': 1.34,
+            'f1score': 1.24,
+        },
+    },
+    'EGTEA': {
+        "MSE": {
             'acc1': 1.27,
             'acc5': 1.12,
             'verb_acc1': 1.065,
             'noun_acc1': 1.3,
             'f1score': 1.2,
+        },
+        "FR": {
+            'acc1': 1.35,
+            'acc5': 1.31,
+            'verb_acc1': 1.108,
+            'noun_acc1': 1.41,
+            'f1score': 1.3,
+        },
+        "FR_clip": {
+            'acc1': 1.32,
+            'acc5': 1.17,
+            'verb_acc1': 1.10,
+            'noun_acc1': 1.34,
+            'f1score': 1.24,
         },
     },
 }
