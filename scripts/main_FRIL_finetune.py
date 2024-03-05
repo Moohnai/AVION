@@ -1062,14 +1062,15 @@ def test(test_loader, model, args, num_videos):
     all_logits = np.stack(all_logits_reorg, axis=0)
     all_probs = np.stack(all_probs_reorg, axis=0)
     all_targets = np.stack(all_targets_reorg, axis=0)
+    if len(all_logits.shape) == 2:
+        all_logits = np.expand_dims(all_logits, axis=1)
+        all_probs = np.expand_dims(all_probs, axis=1)
     all_logits = all_logits[:num_videos, :].mean(axis=1)
     all_probs = all_probs[:num_videos, :].mean(axis=1)
     all_targets = all_targets[:num_videos, ]
 
     for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
         if s == 'logits': 
-            if len(all_preds.shape) == 1:
-                all_preds = np.expand_dims(all_preds, axis=1)
             all_preds = scipy.special.softmax(all_preds, axis=1)
 
         if args.dataset == 'ek100_cls':
@@ -1111,22 +1112,22 @@ def test(test_loader, model, args, num_videos):
     
     for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
         if s == 'logits': 
-            if len(all_preds.shape) == 1:
-                all_preds = np.expand_dims(all_preds, axis=1)
             all_preds = scipy.special.softmax(all_preds, axis=1)
             
         acc1 = top_k_accuracy_score(all_targets, all_preds, k=1, labels=np.arange(0, num_classes))
         acc5 = top_k_accuracy_score(all_targets, all_preds, k=5, labels=np.arange(0, num_classes))
         output_dict = acc_mappping(args, {'acc1': acc1, 'acc5': acc5})
         acc1, acc5 = output_dict['acc1'], output_dict['acc5']
-        dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
+        # dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
+        dataset = args.dataset
         print('[Average {s}] {dataset} * Acc@1 {top1:.3f} Acc@5 {top5:.3f}'.format(s=s, dataset=dataset, top1=acc1, top5=acc5))
         cm = confusion_matrix(all_targets, all_preds.argmax(axis=1))
         mean_acc, acc = get_mean_accuracy(cm)
+        output_dict = acc_mappping(args, {'acc1':acc, 'mean_acc':mean_acc})
+        acc, mean_acc = output_dict['acc1'], output_dict['mean_acc']
         # print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
 
     return {k: v.avg for k, v in metrics.items()}
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('AVION training and evaluation', parents=[get_args_parser()])
