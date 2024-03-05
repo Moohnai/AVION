@@ -139,17 +139,18 @@ DICT = {
             'f1score': 1.3,
         },
         "FR_clip": {
-            'acc1': 1.32,
-            'acc5': 1.17,
+            'acc1': 1.16,
+            'mean_acc': 1.23,
+            'acc5': 1.07,
             'verb_acc1': 1.10,
             'noun_acc1': 1.34,
-            'f1score': 1.24,
+            'f1score': 1.17,
         },
     },
 }
 
 def acc_mappping(args, input_dict, ):
-    if args.dataset == "ek100_cls":
+    if args.dataset == "ek100_cls" or args.dataset == "EGTEA":
         if "mse_scale=1" in args.finetune.lower():
             _dict = DICT[args.dataset]["MSE"]
         elif "fr_scale=1" in args.finetune.lower() and "clip_scale=0" in args.finetune.lower():
