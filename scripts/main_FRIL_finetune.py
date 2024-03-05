@@ -1125,7 +1125,7 @@ def test(test_loader, model, args, num_videos):
         mean_acc, acc = get_mean_accuracy(cm)
         output_dict = acc_mappping(args, {'acc1':acc, 'mean_acc':mean_acc})
         acc, mean_acc = output_dict['acc1'], output_dict['mean_acc']
-        # print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
+        print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
 
     return {k: v.avg for k, v in metrics.items()}
 
