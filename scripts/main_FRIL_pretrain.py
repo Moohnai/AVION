@@ -99,13 +99,13 @@ def get_args_parser():
     parser.add_argument('--drop-path-rate', default=0., type=float)
     parser.add_argument('--resume', default='', type=str, help='path to resume from')
     parser.add_argument('--pretrain-path', 
-                        default=os.path.join(parent_path, 'results/vit_b_16-laion400m_e32-55e67d44.pt'), # 
+                        default='', #os.path.join(parent_path, 'results/vit_b_16-laion400m_e32-55e67d44.pt')
                         type=str, help='path to pretrain model')
     parser.add_argument('--normalize-target', action='store_true', dest='normalize_target')
     parser.add_argument('--no-normalize-target', action='store_false', dest='normalize_target')
     parser.set_defaults(normalize_target=True)
     # train
-    parser.add_argument('--run_name', default='pre-pretrain_FR_CLIP_vidcaption_vifi_all_EK100', type=str)
+    parser.add_argument('--run_name', default='pretrain_ActCLIP_vidcaption_vifi_all_EK100', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -144,7 +144,7 @@ def get_args_parser():
                         )
     parser.add_argument('--MSE_scale', default=0, type=float, help='the weight of MSE loss')
     parser.add_argument('--CLIP_scale', default=1, type=float, help='the weight of clip loss')
-    parser.add_argument('--FR_scale', default=1, type=float, help='the weight of feature reconstruction loss')
+    parser.add_argument('--FR_scale', default=0, type=float, help='the weight of feature reconstruction loss')
     parser.add_argument('--CLIP-strategy', default='patch-average', type=str, help='the strategy of CLIP', choices=['patch', 'average', 'patch-average'])
     parser.add_argument('--patch_iter', default='1', type=int, help='the number of iterations for patch-wise clip loss')
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0], metavar='M',
@@ -659,7 +659,7 @@ def train(
                 
                 patch_wise_clip_loss = patch_wise_clip_loss / args.patch_iter
             elif args.CLIP_strategy == 'average':
-                video_embed = embedded_patches.mean(dim=1)
+                video_embed = mapped_embedded_patches.mean(dim=1)
                 clip_loss = Clip_criterion(video_embed, text_embed, logit_scale)
                 patch_wise_clip_loss = clip_loss['loss']
                 patch_wise_clip_acc_list = [clip_loss['clip_acc']]

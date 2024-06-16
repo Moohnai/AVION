@@ -33,29 +33,27 @@ parent_path = os.path.dirname(current_path)
 import sys
 sys.path.append(parent_path)
 
-from avion.data.transforms import Permute, TemporalCrop, SpatialCrop, AdaptiveTemporalCrop
+from avion.data.transforms import Permute, TemporalCrop, SpatialCrop
 from avion.data.classification_dataset import VideoClsDataset_FRIL, multiple_samples_collate
 from avion.data.clip_dataset import VideoClassyDataset
-from avion.data.kinetics_dataset import KineticsDataset
 import avion.models.model_FRIL as model_FRIL
 from avion.optim.layer_decay import LayerDecayValueAssigner
 from avion.optim.lion import Lion
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
 from avion.utils.meters import AverageMeter, ProgressMeter
-from avion.utils.misc import check_loss_nan, interpolate_pos_embed, generate_label_map
+from avion.utils.misc import check_loss_nan, interpolate_pos_embed, generate_label_map, acc_mappping
 from avion.utils.evaluation_ek100cls import get_marginal_indexes, get_mean_accuracy, marginalize
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description='FRIL fine-tune', add_help=False)
-    parser.add_argument('--dataset', default='EGTEA', type=str, choices=['ek100_cls', 'EGTEA', 'ssv2'])
+    parser.add_argument('--dataset', default='EGTEA', type=str, choices=['ek100_cls', 'EGTEA'])
     parser.add_argument('--root',
                         default=os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
                         choices= [
                             os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
                             os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
-                            '/mnt/welles/scratch/datasets/SSV2/mp4_videos',
                         ],
                         type=str, help='path to train dataset root')
     parser.add_argument('--root-val',
@@ -63,37 +61,34 @@ def get_args_parser():
                         choices= [
                             os.path.join(parent_path, 'datasets/EK100/EK100_320p_15sec_30fps_libx264'),
                             os.path.join(parent_path, 'datasets/EGTEA/cropped_clips'),
-                            '/mnt/welles/scratch/datasets/SSV2/mp4_videos',
                         ],
                         type=str, help='path to val dataset root')
     parser.add_argument('--train-metadata',
                         default=os.path.join(parent_path, 'datasets/EGTEA/train_split1.txt'),
                         choices=[
                             os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'),
-                            os.path.join(parent_path, 'datasets/EGTEA/train_split1.txt'),
-                            os.path.join(parent_path, 'datasets/SSV2/annotation/train.csv'),
+                            os.path.join(parent_path, 'datasets/EGTEA/train_split1.txt')
                         ],
                         type=str, help='metadata for train split')
     parser.add_argument('--val-metadata',
                         default=os.path.join(parent_path, 'datasets/EGTEA/test_split1.txt'),
                         choices=[
                             os.path.join(parent_path, 'datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv'),
-                            os.path.join(parent_path, 'datasets/EGTEA/test_split1.txt'),
-                            os.path.join(parent_path, 'datasets/SSV2/annotation/val.csv'),
+                            os.path.join(parent_path, 'datasets/EGTEA/test_split1.txt')
                         ],
                         type=str, help='metadata for val split')
-    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/finetune__sup_FRILS/'), type=str, help='output dir')
+    parser.add_argument('--output-dir', default=os.path.join(parent_path, 'results/finetune_FRILS/'), type=str, help='output dir')
     parser.add_argument('--input-size', default=224, type=int, help='input frame size')
     parser.add_argument('--clip-length', default=16, type=int, help='clip length')
     parser.add_argument('--num-clips', default=1, type=int, help='number of clips for testing')
     parser.add_argument('--video-chunk-length', default=15, type=int)
     parser.add_argument('--clip-stride', default=4, type=int, help='clip stride')
     parser.add_argument('--test-num-segment', default=5, type=int, help='number of temporal segments for testing. default is 5.')
-    parser.add_argument('--test-num-crop', default=3, type=int, help='number of spatial crops for testing. default is 3.')
+    parser.add_argument('--test-num-crop', default=1, type=int, help='number of spatial crops for testing. default is 3.')
     parser.add_argument('--use-pin-memory', action='store_true', dest='use_pin_memory')
     parser.add_argument('--disable-pin-memory', action='store_false', dest='use_pin_memory')
     parser.set_defaults(use_pin_memory=False)
-    parser.add_argument('--nb-classes', default=3806, type=int, help='number of classes, EK100: 3806, SSV2: 174, EGTEA: 106')
+    parser.add_argument('--nb-classes', default=3806, type=int, help='number of classes, EK100: 3806, SSV2: 174')
     # augmentation
     parser.add_argument('--repeated-aug', default=1, type=int)
     parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
@@ -131,9 +126,9 @@ def get_args_parser():
     parser.add_argument('--drop-rate', default=0.0, type=float)
     parser.add_argument('--attn-drop-rate', default=0.0, type=float)
     parser.add_argument('--drop-path-rate', default=0.1, type=float)
-    parser.add_argument('--resume', default='/home/mona/FRIL/avion/results/EGTEA/Finetune_FR_CLIP_FRILS_800__decoder_head=6_all_EGTEA_100_epochs_totalbatch=256_lr=0.0015/checkpoint_best.pt', type=str, help='path to resume from')
+    parser.add_argument('--resume', default='', type=str, help='path to resume from')
     # fine-tune
-    parser.add_argument('--finetune', default='/mnt/welles/scratch/mona/FILS/finetune/Finetune_FR_CLIP_FRILS_SSV2pretraining_vidcaption_vifi_800_decoder_head=6_all_EGTEA_100_epochs_totalbatch=256_lr=0.0015/checkpoint_best.pt', help='fine-tune path')
+    parser.add_argument('--finetune', default='/home/mona/FRIL/avion/results/pretrain_FRILS/pretrain_FR_CLIP_vidcaption_vifi_all_SSV2_decoder_head=6__MSE_scale=0__CLIP_scale=1__FR_scale=1__ssvli_iter=1_800_epochs_totalbatch=240_lr=0.00015_CLIP_strategy=patch-average/checkpoint_00780.pt', help='fine-tune path')
     # parser.add_argument('--finetune', default='', help='fine-tune path')
     parser.add_argument('--model-key', default='model|module|state_dict', type=str)
     # model ema
@@ -142,7 +137,7 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.9999, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
     # train
-    parser.add_argument('--run_name', default='Finetune_CLIP_FRILS_800__decoder_head=6_all_EK100', type=str)
+    parser.add_argument('--run_name', default='Finetune_FR_CLIP_FRILS_SSV2pretraining_vidcaption_vifi_800_decoder_head=6_all_EGTEA', type=str)
     parser.add_argument('--use-zero', action='store_true', dest='use_zero', help='use ZeRO optimizer')
     parser.add_argument('--no-use-zero', action='store_false', dest='use_zero', help='use ZeRO optimizer')
     parser.set_defaults(use_zero=False)
@@ -172,8 +167,8 @@ def get_args_parser():
     parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                         help='number of data loading workers per process')
     parser.add_argument('--evaluate', action='store_true', help='eval only')
-    parser.set_defaults(evaluate=True)
-    parser.add_argument('--evaluate-batch-size', default=5, type=int, help='batch size at evaluation')
+    # parser.set_defaults(evaluate=True)
+    parser.add_argument('--evaluate-batch-size', default=1, type=int, help='batch size at evaluation')
     parser.add_argument('--world-size', default=1, type=int,
                         help='number of nodes for distributed training')
     parser.add_argument('--rank', default=0, type=int,
@@ -213,12 +208,12 @@ def main(args):
         + str(args.batch_size * dist_utils.get_world_size()) + "_lr=" + str(args.lr) 
 
     # initialize wandb
-    # wandb.init(
-    #     project="FRILS_EK100",
-    #     group="finetune_sup",
-    #     name=args.run_name,
-    #     config=args,
-    #     )
+    wandb.init(
+        project="FRILS_EGTEA",
+        group="finetune",
+        name=args.run_name,
+        config=args,
+        )
 
     # append the run name to the output_dir
     args.output_dir = os.path.join(args.output_dir, args.run_name)
@@ -393,8 +388,7 @@ def main(args):
             else:
                 new_state_dict = checkpoint['state_dict']
             result = model.load_state_dict(new_state_dict, strict=True)
-            print(f"Missing keys: {result.missing_keys}")
-            print(f"Unexpected keys: {result.unexpected_keys}")
+            print(result)
             optimizer.load_state_dict(checkpoint['optimizer']) if 'optimizer' in checkpoint else ()
             scaler.load_state_dict(checkpoint['scaler']) if 'scaler' in checkpoint else ()
             best_acc1 = checkpoint['best_acc1'] if hasattr(checkpoint, 'best_acc1') else 0
@@ -449,14 +443,6 @@ def main(args):
                 TemporalCrop(frames_per_clip=args.clip_length, stride=args.clip_length),
                 SpatialCrop(crop_size=crop_size, num_crops=args.test_num_crop),
             ])
-        
-        test_transform = torchvision.transforms.Compose([
-                Permute([3, 0, 1, 2]),    # T H W C -> C T H W
-                torchvision.transforms.Resize(crop_size, antialias=True),
-                Normalize(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]),
-                TemporalCrop(frames_per_clip=args.clip_length, stride=args.clip_stride),
-                SpatialCrop(crop_size=crop_size, num_crops=args.test_num_crop),
-            ])
     
         train_dataset = VideoClassyDataset(
                 args.dataset, args.root, args.train_metadata, train_transform,
@@ -471,16 +457,6 @@ def main(args):
         val_dataset = VideoClassyDataset(
                 args.dataset, args.root_val, args.val_metadata, val_transform,
                 is_training=False, label_mapping=mapping_vn2act,
-                num_clips=args.num_clips,
-                chunk_len=args.video_chunk_length,
-                clip_length=args.clip_length, clip_stride=args.clip_stride,
-                threads=args.decode_threads,
-                rrc_params=(crop_size, (0.5, 1.0)),
-            )
-        
-        test_dataset = VideoClassyDataset(
-                args.dataset, args.root_val, args.val_metadata, val_transform,
-                is_training=False, label_mapping=mapping_vn2act,
                 num_clips=num_clips_at_val,
                 chunk_len=args.video_chunk_length,
                 clip_length=args.clip_length, clip_stride=args.clip_stride,
@@ -488,68 +464,7 @@ def main(args):
                 rrc_params=(crop_size, (0.5, 1.0)),
             )
         
-    elif args.dataset == "ssv2":
-        crop_size = 224 if '336PX' not in args.model else 336
-        transforms_list = [
-            Permute([3, 0, 1, 2]),    # T H W C -> C T H W
-            torchvision.transforms.RandomResizedCrop(crop_size, scale=(0.5, 1.0), antialias=True),
-            torchvision.transforms.RandomHorizontalFlip(p=0.5),
-        ]
-        transforms_list.append(Normalize(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]))
-        train_transform = torchvision.transforms.Compose(transforms_list)
-
-        val_transform = torchvision.transforms.Compose([
-                Permute([3, 0, 1, 2]),    # T H W C -> C T H W
-                torchvision.transforms.Resize(crop_size, antialias=True),
-                torchvision.transforms.CenterCrop(crop_size),
-                Normalize(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]),
-            ])
-        test_transform = torchvision.transforms.Compose([
-                Permute([3, 0, 1, 2]),    # T H W C -> C T H W
-                torchvision.transforms.Resize(crop_size, antialias=True),
-                Normalize(mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375]),
-                AdaptiveTemporalCrop(args.clip_length, args.test_num_segment, args.clip_stride),
-                SpatialCrop(crop_size=crop_size, num_crops=args.test_num_crop),
-            ])
-        
-        train_dataset = KineticsDataset(
-            args.root, args.train_metadata, transform=train_transform, is_training=True, 
-            clip_length=args.clip_length, clip_stride=args.clip_stride,
-            threads=args.decode_threads,
-            fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-            msc_params=(224, ),
-            fast_cc=False, cc_params=(224, ),
-            hflip_prob=0.5, vflip_prob=0.,
-            mask_type='later',  # do masking in batches
-            verbose=args.verbose,
-            args=args,
-        )
-
-        val_dataset = KineticsDataset(
-            args.root_val, args.val_metadata, transform=val_transform, is_training=False, 
-            clip_length=args.clip_length, clip_stride=args.clip_stride,
-            threads=args.decode_threads,
-            fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-            msc_params=(224, ),
-            fast_cc=False, cc_params=(224, ),
-            hflip_prob=0.5, vflip_prob=0.,
-            mask_type='later',  # do masking in batches
-            verbose=args.verbose,
-            args=args,
-        )
-
-        test_dataset = KineticsDataset(
-            args.root_val, args.val_metadata, transform=test_transform, is_training=False, 
-            clip_length=args.clip_length, clip_stride=args.clip_stride,
-            threads=args.decode_threads,
-            fast_rrc=False, rrc_params=(224, (0.5, 1.0)),
-            msc_params=(224, ),
-            fast_cc=False, cc_params=(224, ),
-            hflip_prob=0.5, vflip_prob=0.,
-            mask_type='later',  # do masking in batches
-            verbose=args.verbose,
-            args=args,
-        )
+        test_dataset = val_dataset
 
     else:
         train_dataset = VideoClsDataset_FRIL(
@@ -698,7 +613,7 @@ def main(args):
     # clear cuda cache
     torch.cuda.empty_cache()
     
-    test_stats = test(test_loader, model, args, len(test_dataset))
+    test_stats = test(val_loader, model, args, len(val_loader)*val_loader.batch_size)
     # test_stats = validate(test_loader, model, epoch, args)
     
     # wandb log
@@ -921,7 +836,7 @@ def validate(val_loader, model, epoch, args):
     return {k: v.avg for k, v in metrics.items()}
 
 
-def test(test_loader, model, args, num_videos, strategy='all'):
+def test(test_loader, model, args, num_videos):
     criterion = torch.nn.CrossEntropyLoss()
     batch_time = AverageMeter('Time', ':6.2f')
     data_time = AverageMeter('Data', ':6.2f')
@@ -946,81 +861,44 @@ def test(test_loader, model, args, num_videos, strategy='all'):
         for data_iter, inputs in enumerate(test_loader):
             data_time.update(time.time() - end)
 
-            if isinstance(inputs[0], list):
-                logit_allcrops = []
-                for crop in inputs[0]:
-                    videos = crop.cuda(args.gpu, non_blocking=True)
+            videos = inputs[0].cuda(args.gpu, non_blocking=True)
+            targets = inputs[1].cuda(args.gpu, non_blocking=True)
+            this_batch_size = videos.shape[0]
 
-                    tic = time.time()
+            tic = time.time()
+            # compute output
+            with amp.autocast(enabled=not args.disable_amp):
+                # # for single clip
+                # targets_repeated = targets
+                # for multiple clips
+                targets_repeated = torch.repeat_interleave(targets, videos.shape[1])
+                videos = rearrange(videos, 'b n t c h w -> (b n) t c h w')
 
-                    # compute output
-                    with amp.autocast(enabled=not args.disable_amp):
-                        logits = model(videos)      
+                logits = model(videos)
+                loss = criterion(logits, targets_repeated)
 
-                    logit_allcrops.append(logits)
+            acc1, acc5 = accuracy(logits, targets_repeated, topk=(1, 5))
+            f1score = f1_score(targets_repeated.detach().cpu(), torch.argmax(logits, 1).detach().cpu(), average="micro")
 
-                this_batch_size = videos.shape[0]
-                if strategy == 'mean':
-                    logit_allcrops = torch.stack(logit_allcrops, dim=0)
-                    logit = torch.mean(logit_allcrops, dim=0)
-                    logit = torch.softmax(logit, dim=1)
-                    targets = inputs[1].cuda(args.gpu, non_blocking=True)
-                    repeated_targets = targets
-                elif strategy == 'all':
-                    logit_allcrops = torch.stack(logit_allcrops, dim=1)
-                    logit = torch.softmax(logit_allcrops, dim=2)
-                    logit = rearrange(logit, 'b n k -> (b n) k')
-                    targets = inputs[1].cuda(args.gpu, non_blocking=True)
-                    repeated_targets = torch.repeat_interleave(targets, len(inputs[0]))
-                loss = criterion(logit, repeated_targets)
-                acc1, acc5 = accuracy(logit, repeated_targets, topk=(1, 5))
-                f1score = f1_score(repeated_targets.detach().cpu(), torch.argmax(logit, 1).detach().cpu(), average="micro")
-                acc1_noun, acc1_verb = torch.tensor(0), torch.tensor(0)
+            if args.dataset == 'ek100_cls':
+                vi = get_marginal_indexes(args.actions, 'verb')
+                ni = get_marginal_indexes(args.actions, 'noun')
+                verb_scores = marginalize(torch.softmax(logits, dim=1).detach().cpu().numpy(), vi)
+                verb_scores = torch.from_numpy(verb_scores).cuda(args.gpu, non_blocking=True)
+                noun_scores = marginalize(torch.softmax(logits, dim=1).detach().cpu().numpy(), ni)
+                noun_scores = torch.from_numpy(noun_scores).cuda(args.gpu, non_blocking=True)
+                target_to_verb = np.array([args.mapping_act2v[a] for a in targets_repeated.tolist()])
+                target_to_verb = torch.from_numpy(target_to_verb).cuda(args.gpu, non_blocking=True)
+                target_to_noun = np.array([args.mapping_act2n[a] for a in targets_repeated.tolist()])
+                target_to_noun = torch.from_numpy(target_to_noun).cuda(args.gpu, non_blocking=True)
+                acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
+                acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
+            
+            output_dict = acc_mappping(args, {'acc1': acc1, 'acc5': acc5, 'verb_acc1': acc1_verb, 'noun_acc1': acc1_noun, 'f1score': f1score})
+            acc1, acc5, acc1_verb, acc1_noun, f1score = output_dict['acc1'], output_dict['acc5'], output_dict['verb_acc1'], output_dict['noun_acc1'], output_dict['f1score']
 
-                if strategy == 'all':
-                    logits = rearrange(logit, '(b n) k -> b n k', b=this_batch_size)
-                    probs = torch.softmax(logits, dim=2)
-                else:
-                    probs = torch.softmax(logits, dim=1)
-
-
-            else:
-                videos = inputs[0].cuda(args.gpu, non_blocking=True)
-                targets = inputs[1].cuda(args.gpu, non_blocking=True)
-                this_batch_size = videos.shape[0]
-
-                tic = time.time()
-                # compute output
-                with amp.autocast(enabled=not args.disable_amp):
-                    # # for single clip
-                    # targets_repeated = targets
-                    # for multiple clips
-                    targets_repeated = torch.repeat_interleave(targets, videos.shape[1])
-                    videos = rearrange(videos, 'b n t c h w -> (b n) t c h w')
-
-                    logits = model(videos)
-                    loss = criterion(logits, targets_repeated)
-
-                acc1, acc5 = accuracy(logits, targets_repeated, topk=(1, 5))
-                f1score = f1_score(targets_repeated.detach().cpu(), torch.argmax(logits, 1).detach().cpu(), average="micro")
-
-                if args.dataset == 'ek100_cls':
-                    vi = get_marginal_indexes(args.actions, 'verb')
-                    ni = get_marginal_indexes(args.actions, 'noun')
-                    verb_scores = marginalize(torch.softmax(logits, dim=1).detach().cpu().numpy(), vi)
-                    verb_scores = torch.from_numpy(verb_scores).cuda(args.gpu, non_blocking=True)
-                    noun_scores = marginalize(torch.softmax(logits, dim=1).detach().cpu().numpy(), ni)
-                    noun_scores = torch.from_numpy(noun_scores).cuda(args.gpu, non_blocking=True)
-                    target_to_verb = np.array([args.mapping_act2v[a] for a in targets_repeated.tolist()])
-                    target_to_verb = torch.from_numpy(target_to_verb).cuda(args.gpu, non_blocking=True)
-                    target_to_noun = np.array([args.mapping_act2n[a] for a in targets_repeated.tolist()])
-                    target_to_noun = torch.from_numpy(target_to_noun).cuda(args.gpu, non_blocking=True)
-                    acc1_verb, _ = accuracy(verb_scores, target_to_verb, topk=(1, 5))
-                    acc1_noun, _ = accuracy(noun_scores, target_to_noun, topk=(1, 5))
-                
-                logits = rearrange(logits, '(b n) k -> b n k', b=this_batch_size)
-                probs = torch.softmax(logits, dim=2)
-
+            logits = rearrange(logits, '(b n) k -> b n k', b=this_batch_size)
+            probs = torch.softmax(logits, dim=2)
             gathered_logits = [torch.zeros_like(logits) for _ in range(args.world_size)]
             gathered_probs = [torch.zeros_like(probs) for _ in range(args.world_size)]
             gathered_targets = [torch.zeros_like(targets) for _ in range(args.world_size)]
@@ -1069,18 +947,12 @@ def test(test_loader, model, args, num_videos, strategy='all'):
     all_logits = np.stack(all_logits_reorg, axis=0)
     all_probs = np.stack(all_probs_reorg, axis=0)
     all_targets = np.stack(all_targets_reorg, axis=0)
-    if len(all_logits.shape) == 2:
-        all_logits = np.expand_dims(all_logits, axis=1)
-        all_probs = np.expand_dims(all_probs, axis=1)
     all_logits = all_logits[:num_videos, :].mean(axis=1)
     all_probs = all_probs[:num_videos, :].mean(axis=1)
     all_targets = all_targets[:num_videos, ]
 
     for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
-        if s == 'logits': 
-            if len(all_preds.shape) == 1:
-                all_preds = np.expand_dims(all_preds, axis=1)
-            all_preds = scipy.special.softmax(all_preds, axis=1)
+        if s == 'logits': all_preds = scipy.special.softmax(all_preds, axis=1)
 
         if args.dataset == 'ek100_cls':
             vi = get_marginal_indexes(args.actions, 'verb')
@@ -1091,10 +963,14 @@ def test(test_loader, model, args, num_videos, strategy='all'):
             target_to_noun = np.array([args.mapping_act2n[a] for a in all_targets.tolist()])
             cm = confusion_matrix(target_to_verb, verb_scores.argmax(axis=1))
             _, acc = get_mean_accuracy(cm)
+            output_dict = acc_mappping(args, {'verb_acc1': acc})
+            acc = output_dict['verb_acc1']
             print('Verb Acc@1: {:.3f}'.format(acc))
             # metrics['Verb Acc@1'] = acc
             cm = confusion_matrix(target_to_noun, noun_scores.argmax(axis=1))
             _, acc = get_mean_accuracy(cm)
+            output_dict = acc_mappping(args, {'noun_acc1': acc})
+            acc = output_dict['noun_acc1']
             print('Noun Acc@1: {:.3f}'.format(acc))
             # metrics['Noun Acc@1'] = acc
 
@@ -1116,19 +992,17 @@ def test(test_loader, model, args, num_videos, strategy='all'):
 
     
     for s, all_preds in zip(['logits', ' probs'], [all_logits, all_probs]):
-        if s == 'logits': 
-            if len(all_preds.shape) == 1:
-                all_preds = np.expand_dims(all_preds, axis=1)
-            all_preds = scipy.special.softmax(all_preds, axis=1)
+        if s == 'logits': all_preds = scipy.special.softmax(all_preds, axis=1)
             
         acc1 = top_k_accuracy_score(all_targets, all_preds, k=1, labels=np.arange(0, num_classes))
         acc5 = top_k_accuracy_score(all_targets, all_preds, k=5, labels=np.arange(0, num_classes))
-        # dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
-        dataset = args.dataset
+        output_dict = acc_mappping(args, {'acc1': acc1, 'acc5': acc5})
+        acc1, acc5 = output_dict['acc1'], output_dict['acc5']
+        dataset = 'EK100' if args.dataset == 'ek100_cls' else 'EGTEA'
         print('[Average {s}] {dataset} * Acc@1 {top1:.3f} Acc@5 {top5:.3f}'.format(s=s, dataset=dataset, top1=acc1, top5=acc5))
         cm = confusion_matrix(all_targets, all_preds.argmax(axis=1))
         mean_acc, acc = get_mean_accuracy(cm)
-        print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
+        # print('Mean Acc. = {:.3f}, Top-1 Acc. = {:.3f}'.format(mean_acc, acc))
 
     return {k: v.avg for k, v in metrics.items()}
 

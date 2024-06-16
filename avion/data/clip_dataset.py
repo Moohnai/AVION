@@ -465,7 +465,11 @@ class VideoCaptionDatasetCLIP(VideoCaptionDatasetBase):
         )
 
         if self.dataset == 'ek100_cls':
-            frames, label, frame_ids, idx, caption = output
+            if len(output) == 4:
+                frames, label, frame_ids, idx = output
+                caption = self.samples[i][-4]
+            else:
+                frames, label, frame_ids, idx, caption = output
         else:
             frames, caption = output
 

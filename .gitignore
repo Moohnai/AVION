@@ -3,11 +3,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.out
+*.jpg
 
 # directories
 datasets/*/
 results/
 wandb/
+CAM_results/*/*/*/*/
 
 # C extensions
 *.so

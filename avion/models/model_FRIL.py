@@ -1379,7 +1379,8 @@ class FRILS_PretrainVisionTransformer(nn.Module):
         _, embedded_patch = self.encoder(x, mask)
         mapped_embedded_patch = self.v2t_mapping(embedded_patch)
 
-        return mapped_embedded_patch.mean(1)
+        # return mapped_embedded_patch.mean(1)
+        return mapped_embedded_patch
 
     def forward(self, x, mask):
         b, _, T, _, _ = x.shape
